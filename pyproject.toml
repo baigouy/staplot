@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staplot"
+version = "0.1.0"
+description = "Statistical analysis and publication-quality plotting — a GraphPad Prism replacement"
+# `X | None` annotations are evaluated at runtime in several modules
+requires-python = ">=3.10"
+dependencies = [
+    "qtpy",
+    "PyQt6",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "statsmodels",
+    "pandas",
+]
+
+[project.optional-dependencies]
+excel = ["openpyxl"]
+
+[project.scripts]
+staplot = "staplot.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["staplot*"]
