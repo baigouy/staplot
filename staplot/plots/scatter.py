@@ -4,6 +4,7 @@ import matplotlib.figure
 from scipy import stats
 
 from ..models.project import DataTable
+from ..stats.descriptive import format_p
 from . import styles
 
 
@@ -48,7 +49,8 @@ def plot_scatter(
             x_line = np.linspace(xi.min(), xi.max(), 200)
             ax.plot(x_line, slope * x_line + intercept, color=color, linewidth=1.5,
                     linestyle="--", alpha=0.8,
-                    label=f"  R²={r**2:.3f}, p={p_val:.4f}")
+                    # format_p: "p=0.0000" printed for any p < 5e-5
+                    label=f"  R²={r**2:.3f}, {format_p(p_val)}")
 
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or ", ".join(y_names))

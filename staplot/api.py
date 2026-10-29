@@ -83,9 +83,26 @@ def table_from_columns(columns: dict, name: str = "data") -> DataTable:
     return t
 
 
+def csv_format(sample: str) -> tuple[str, str]:
+    """(separator, decimal mark) of a CSV from its first lines: ';' or tab when
+    every line has the same number of them (Excel in French, German... writes
+    ``1,5;2,5``), with a decimal comma when the numbers use one; else ','."""
+    import re
+    lines = [ln for ln in sample.splitlines()[:20] if ln.strip()]
+    if len(lines) > 1 and not sample.endswith("\n"):
+        lines = lines[:-1]                    # the sample may cut the last line
+    for sep in (";", "\t"):
+        counts = {ln.count(sep) for ln in lines}
+        if lines and len(counts) == 1 and counts.pop() > 0:
+            return sep, ("," if re.search(r"\d,\d", sample) else ".")
+    return ",", "."
+
+
 def _read_csv(path):
     import pandas as pd
-    return pd.read_csv(path)
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+        sep, decimal = csv_format(f.read(4096))
+    return pd.read_csv(path, sep=sep, decimal=decimal, encoding="utf-8-sig")
 
 
 def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> DataTable:
@@ -133,6 +150,17 @@ def grouped_table_from_csv(path: str, name: str | None = None) -> GroupedDataTab
                          "factor_a, factor_b, value")
     fa, fb, val = df.columns[0], df.columns[1], df.columns[2]
     values = pd.to_numeric(df[val], errors="coerce")
+
+    def numeric_share(col):
+        return pd.to_numeric(df[col], errors="coerce").notna().mean()
+    # a wide table (one column per condition) read as long gives a nonsense
+    # plot and a degenerate ANOVA instead of an error
+    if values.notna().mean() < 0.5 or numeric_share(fa) > 0.5 or numeric_share(fb) > 0.5:
+        raise ValueError(
+            "grouped plot needs a long CSV: one row per measurement, with columns "
+            "factor_a (text), factor_b (text), value (number), e.g. 'Genotype,Day,Length' "
+            "then 'WT,Day 1,10.2'; this file's first three columns are "
+            f"{', '.join(map(str, df.columns[:3]))}")
     # count replicates per (a, b) so n_reps is large enough for every cell
     cells: dict = {}
     for a, b, v in zip(df[fa].astype(str), df[fb].astype(str), values):
