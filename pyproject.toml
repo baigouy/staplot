@@ -6,6 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "staplot"
 version = "0.1.0"
 description = "Statistical analysis and publication-quality plotting — a GraphPad Prism replacement"
+readme = "README.md"
+license = {text = "BSD-2-Clause"}
+authors = [{name = "Benoit Aigouy"}]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+]
 # `X | None` annotations are evaluated at runtime in several modules
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +28,9 @@ dependencies = [
 
 [project.optional-dependencies]
 excel = ["openpyxl"]
+
+[project.urls]
+Homepage = "https://github.com/baigouy/staplot"
 
 [project.scripts]
 staplot = "staplot.main:main"
