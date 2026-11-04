@@ -5,3 +5,10 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+# private: LLM review notes, assistant notes and settings, personal to-do
+suggested_chatGPT_fixes/
+chatGPT*/
+CLAUDE*.md
+claude*.md
+.claude/
+TODO.txt
