@@ -6,6 +6,35 @@ from ..models.project import DataTable
 from . import styles
 from .significance import add_significance_brackets
 
+VIOLIN_CUT = 2.0        # bandwidths drawn past the data (seaborn's default)
+VIOLIN_HALF_WIDTH = 0.4
+
+
+def _violin(ax, x, arr, color):
+    """One violin at *x*: a Gaussian density (Scott's bandwidth) that tapers
+    VIOLIN_CUT bandwidths past the smallest / largest value, and inside it a thin
+    line over the range, a thick one over the quartiles and a white median dot."""
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    top = float(arr.max())
+    q1, med, q3 = np.percentile(arr, [25, 50, 75])
+    spread = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+    if arr.size > 1 and spread > 0:
+        from scipy.stats import gaussian_kde
+        kde = gaussian_kde(arr, bw_method="scott")
+        bw = kde.factor * spread
+        y = np.linspace(arr.min() - VIOLIN_CUT * bw, arr.max() + VIOLIN_CUT * bw, 200)
+        density = kde(y)
+        half = density / density.max() * VIOLIN_HALF_WIDTH
+        ax.fill_betweenx(y, x - half, x + half, facecolor=color, alpha=0.7,
+                         edgecolor="#333333", linewidth=0.8, zorder=2)
+        top = float(y[-1])
+    ax.vlines(x, arr.min(), arr.max(), color="#333333", linewidth=1.0, zorder=3)
+    ax.vlines(x, q1, q3, color="#333333", linewidth=4.0, zorder=3)
+    ax.scatter([x], [med], s=14, color="white", edgecolors="#333333", linewidths=0.6, zorder=4)
+    return top                  # the brackets go above the tapered tip, not the data
+
 
 @styles.styled
 def plot_box(
@@ -33,15 +62,13 @@ def plot_box(
     ]
 
     if plot_type == "violin":
-        parts = ax.violinplot(arrays, positions=range(len(names)), showmedians=True,
-                              showextrema=True)
-        for i, pc in enumerate(parts["bodies"]):
-            pc.set_facecolor(palette[i])
-            pc.set_alpha(0.7)
-        for key in ("cmedians", "cmins", "cmaxes", "cbars"):
-            if key in parts:
-                parts[key].set_color("#333333")
-                parts[key].set_linewidth(1.2)
+        # matplotlib's violinplot stops the density at the smallest and largest value:
+        # flat-cut violins (user: "why are the violins so truncated at top and
+        # bottom"). The density tapers 2 bandwidths past the data, as seaborn and
+        # Prism draw it, with a small box inside (range, quartiles, median).
+        violin_tops = {}
+        for i, arr in enumerate(arrays):
+            violin_tops[names[i]] = _violin(ax, i, np.asarray(arr, float), palette[i])
     else:
         bp = ax.boxplot(
             arrays,
@@ -89,6 +116,8 @@ def plot_box(
         box_tops: dict[str, float] = {}
         for name, arr in zip(names, arrays):
             box_tops[name] = float(np.max(arr)) if len(arr) > 0 else 0.0
+            if plot_type == "violin" and violin_tops.get(name) is not None:
+                box_tops[name] = max(box_tops[name], violin_tops[name])
         add_significance_brackets(ax, names, sig_pairs, box_tops)
 
     fig.tight_layout()

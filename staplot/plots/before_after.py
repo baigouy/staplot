@@ -13,7 +13,7 @@ from . import styles
 def plot_before_after(
     table: DataTable,
     show_mean: bool = True,
-    error_type: str = "sem",
+    error_type: str = "sd",
     connect_lines: bool = True,
     line_alpha: float = 0.35,
     title: str = "",

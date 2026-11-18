@@ -99,7 +99,7 @@ class GraphOptionsDialog(QDialog):
         form1.addRow("Y label:", self._ylabel_edit)
 
         self._error_cb = QComboBox()
-        self._error_cb.addItems(["sem", "sd", "ci95", "none"])
+        self._error_cb.addItems(["sd", "sem", "ci95", "none"])     # SD first: journals prefer it
         form1.addRow("Error bars:", self._error_cb)
 
         self._points_chk = QCheckBox("Show individual data points")

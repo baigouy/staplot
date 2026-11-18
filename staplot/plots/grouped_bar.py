@@ -12,7 +12,7 @@ from . import styles
 @styles.styled
 def plot_grouped_bar(
     table: GroupedDataTable,
-    error_type: str = "sem",      # "sem" | "sd" | "ci95" | "none"
+    error_type: str = "sd",       # "sd" | "sem" | "ci95" | "none"
     show_points: bool = True,
     title: str = "",
     ylabel: str = "",
@@ -106,7 +106,8 @@ def plot_grouped_bar(
     )
     ax.set_ylabel(ylabel or "Value")
     ax.set_title(title or table.name)
-    ax.legend(title="Group", fontsize=8, loc="upper right")
+    # beside the axes: inside, "upper right" covered the tallest bars
+    ax.legend(title="Group", fontsize=8, loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
     ax.set_xlim(-0.5, n_rows - 0.5)
     fig.tight_layout()
     return fig

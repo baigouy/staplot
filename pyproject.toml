@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-excel = ["openpyxl"]
+excel = ["openpyxl", "xlrd"]
 
 [project.urls]
 Homepage = "https://github.com/baigouy/staplot"

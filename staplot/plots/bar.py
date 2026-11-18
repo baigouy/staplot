@@ -11,7 +11,7 @@ from .significance import add_significance_brackets
 @styles.styled
 def plot_bar(
     table: DataTable,
-    error_type: str = "sem",
+    error_type: str = "sd",            # SD: what journals ask for (SEM hides the spread)
     show_points: bool = True,
     title: str = "",
     ylabel: str = "",

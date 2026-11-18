@@ -19,7 +19,7 @@ open-source alternative to GraphPad Prism, with a desktop app and a small Python
 ## Install
 
 ```
-pip install staplot            # add [excel] for .xlsx import
+pip install staplot            # add [excel] for .xlsx / .xls import
 ```
 
 Python 3.10 or newer.
@@ -42,6 +42,12 @@ stats = api.auto_test(table)                   # picks the test, returns p-value
 fig, record = api.plot(table, kind="box")      # matplotlib Figure with brackets
 fig.savefig("counts.pdf")
 ```
+
+Tables can be CSV / TSV / TXT (separator and decimal comma detected) or Excel
+sheets: `api.table_from_csv("book.xlsx::counts")` reads the sheet *counts* (by name
+or number from 1; the first sheet without `::`). `api.read_table(path)` gives the
+DataFrame, `api.list_sheets(path)` the sheet names, and
+`api.csv_cleaning_report(path)` what was left out (empty cells, NA, typos).
 
 `auto_test` checks normality per group (Shapiro-Wilk) and chooses Welch's t-test or
 Mann-Whitney for two groups, and one-way ANOVA + Tukey or Kruskal-Wallis + Dunn for

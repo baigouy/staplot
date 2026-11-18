@@ -705,7 +705,7 @@ class MainWindow(QMainWindow):
         elif pt == "before_after":
             return plot_lib.plot_before_after(t,
                                               show_mean=True,
-                                              error_type=opts.get("error_type", "sem"),
+                                              error_type=opts.get("error_type", "sd"),
                                               title=opts.get("title", ""),
                                               ylabel=opts.get("ylabel", ""),
                                               colors=colors)
@@ -749,7 +749,7 @@ class MainWindow(QMainWindow):
                                               color=colors[0] if colors else None)
         elif pt == "grouped_bar":
             return plot_lib.plot_grouped_bar(t,
-                                             error_type=opts.get("error_type", "sem"),
+                                             error_type=opts.get("error_type", "sd"),
                                              show_points=opts.get("show_points", True),
                                              title=opts.get("title", ""),
                                              ylabel=opts.get("ylabel", ""),
@@ -768,7 +768,7 @@ class MainWindow(QMainWindow):
                                          color_down=colors[1] if colors and len(colors) > 1 else None)
         else:  # bar (default)
             return plot_lib.plot_bar(t,
-                                     error_type=opts.get("error_type", "sem"),
+                                     error_type=opts.get("error_type", "sd"),
                                      show_points=opts.get("show_points", True),
                                      title=opts.get("title", ""),
                                      ylabel=opts.get("ylabel", ""),
@@ -1055,18 +1055,14 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            import openpyxl
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            sheet = wb.active
-            rows = list(sheet.values)
-            wb.close()
-            if not rows:
+            # openpyxl alone could not read an old .xls: read_table picks the reader
+            from staplot.api import read_table
+            df = read_table(path)
+            if df.empty:
                 return
-            headers = [
-                str(h) if h is not None else f"Col{i + 1}"
-                for i, h in enumerate(rows[0])
-            ]
-            data_rows = rows[1:]
+            headers = [str(h) for h in df.columns]
+            data_rows = [[None if (isinstance(v, float) and v != v) else v for v in row]
+                         for row in df.itertuples(index=False)]
             name = os.path.splitext(os.path.basename(path))[0]
             t = self.project.add_table(name)
             for h in headers:
@@ -1084,12 +1080,8 @@ class MainWindow(QMainWindow):
             self.table_widget.load_table(t)
             self.stack.setCurrentIndex(0)
             self._mark_modified(f"Imported: {name}")
-        except ImportError:
-            QMessageBox.critical(
-                self, "Missing dependency",
-                "openpyxl is required for Excel import.\n"
-                "Install it with:  pip install openpyxl"
-            )
+        except ImportError as exc:
+            QMessageBox.critical(self, "Missing dependency", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
 

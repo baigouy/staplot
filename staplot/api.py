@@ -98,11 +98,105 @@ def csv_format(sample: str) -> tuple[str, str]:
     return ",", "."
 
 
-def _read_csv(path):
+EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
+SHEET_SEP = "::"
+
+
+def split_sheet(path: str) -> tuple[str, str | None]:
+    """("data.xlsx", "Sheet2") for "data.xlsx::Sheet2"; (path, None) otherwise.
+    A sheet is named by its name or its number from 1."""
+    path = str(path)
+    if SHEET_SEP in path:
+        file, sheet = path.rsplit(SHEET_SEP, 1)
+        if file.lower().endswith(EXCEL_EXTENSIONS):
+            return file, (sheet or None)
+    return path, None
+
+
+def is_excel(path: str) -> bool:
+    return split_sheet(path)[0].lower().endswith(EXCEL_EXTENSIONS)
+
+
+def _excel_engine(file: str) -> str:
+    """openpyxl for .xlsx/.xlsm, xlrd for the old .xls; a clear message when missing."""
+    old = file.lower().endswith(".xls")
+    module = "xlrd" if old else "openpyxl"
+    try:
+        __import__(module)
+    except ImportError:
+        raise ImportError(f"reading {os.path.basename(file)} needs the '{module}' package "
+                          f"(pip install {module}), or save the sheet as CSV") from None
+    return module
+
+
+def list_sheets(path: str) -> list[str]:
+    """The sheet names of an Excel workbook ([] for a text table)."""
+    file, _ = split_sheet(path)
+    if not is_excel(file):
+        return []
     import pandas as pd
-    with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
-        sep, decimal = csv_format(f.read(4096))
-    return pd.read_csv(path, sep=sep, decimal=decimal, encoding="utf-8-sig")
+    with pd.ExcelFile(file, engine=_excel_engine(file)) as book:
+        return [str(s) for s in book.sheet_names]
+
+
+def read_table(path: str):
+    """A table as a DataFrame: CSV / TSV / TXT (separator and decimal mark detected)
+    or an Excel sheet (.xlsx, .xlsm, .xls; "book.xlsx::Sheet2" picks a sheet, by name
+    or number from 1; the first one otherwise). Rows and columns left wholly empty in
+    the sheet are dropped (a sheet often has a blank margin)."""
+    import pandas as pd
+    file, sheet = split_sheet(path)
+    if not is_excel(file):
+        with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
+            sep, decimal = csv_format(f.read(4096))
+        df = pd.read_csv(file, sep=sep, decimal=decimal, encoding="utf-8-sig")
+        # one typo ("abc") in a decimal-comma column keeps the whole column as text,
+        # and pandas then leaves its "41,2" unconverted: the group vanished
+        return _numbers_from_text(df, decimal_comma=(decimal == ","))
+    engine = _excel_engine(file)
+    with pd.ExcelFile(file, engine=engine) as book:
+        names = [str(s) for s in book.sheet_names]
+        if sheet is None:
+            chosen = names[0]
+        elif sheet in names:
+            chosen = sheet
+        elif sheet.strip().isdigit() and 1 <= int(sheet) <= len(names):
+            chosen = names[int(sheet) - 1]
+        else:
+            raise ValueError(f"no sheet {sheet!r} in {os.path.basename(file)}; "
+                             f"its sheets are {', '.join(names)}")
+        raw = book.parse(chosen, header=None)
+    raw = raw.dropna(how="all").dropna(axis=1, how="all")
+    if raw.empty:
+        return pd.DataFrame()
+    header = [str(v).strip() if not (isinstance(v, float) and v != v) else f"column {i + 1}"
+              for i, v in enumerate(raw.iloc[0])]
+    df = raw.iloc[1:].reset_index(drop=True)
+    df.columns = header
+    # Excel cells typed as text ("12", "3,5") are numbers to a CSV reader too
+    return _numbers_from_text(df, decimal_comma=True)
+
+
+def _numbers_from_text(df, decimal_comma: bool):
+    """Text columns that are mostly numbers become numbers (cells that are not, like a
+    typo 'abc', stay as they are: the cleaning report names them). A decimal comma is
+    read only where the table uses one (else "1,234" could be a thousands mark)."""
+    import pandas as pd
+    for col in df.columns:
+        # text columns: object, or pandas 3's string dtype
+        if pd.api.types.is_numeric_dtype(df[col]) or pd.api.types.is_bool_dtype(df[col]):
+            continue
+        text = df[col].astype(str).str.strip()
+        if decimal_comma:
+            text = text.str.replace(",", ".", regex=False)
+        converted = pd.to_numeric(text.where(df[col].notna()), errors="coerce")
+        if converted.notna().sum() >= max(1, df[col].notna().sum() // 2):
+            df[col] = converted.where(converted.notna(), df[col])
+    return df.infer_objects()
+
+
+def _read_csv(path):
+    return read_table(path)
 
 
 def _detect_layout(df, layout: str = "auto") -> str:
@@ -448,7 +542,7 @@ _STATS_MODE = {"auto": None, "parametric": True, "nonparametric": False}
 
 
 @_plots.styles.styled  # the two-way ANOVA note is added after the plot is built
-def plot(table, kind: str = "bar", *, error: str = "sem", annotate: bool = True,
+def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          only_significant: bool = True, stats_mode: str = "auto", title: str = "",
          ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = True):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
@@ -502,4 +596,163 @@ def plot(table, kind: str = "bar", *, error: str = "sem", annotate: bool = True,
         for ax in fig.axes:
             ax.set_title("")
         fig.tight_layout()  # give the title's room back to the axes
+    if kind == "grouped" and annotate and stats_record and "error" not in stats_record:
+        # room for the ANOVA line under the axis labels (they ran into each other)
+        fig.tight_layout(rect=(0, 0.06, 1, 1))
     return fig, stats_record
+
+
+def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
+              only_significant: bool = True, stats_mode: str = "auto", title: str = "",
+              ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = False) -> str:
+    """The Python code of a plot (user: "can staplot print the code it used to generate
+    the fig"): a runnable script whose first part redraws the figure with staplot, and
+    whose second part reads the table with pandas as staplot does (separator, decimal
+    comma, Excel sheet, blank margin, numbers typed as text, empty / NA / typo cells
+    left out) and runs the same statistics with scipy / statsmodels alone, so a
+    reader or reviewer can check every step without staplot."""
+    from . import __version__
+    file, sheet = split_sheet(path)
+    path = os.path.abspath(file) + (SHEET_SEP + sheet if sheet else "")    # runs from any folder
+    args = [f"kind={kind!r}"]
+    for name, value, default in (("error", error, "sd"), ("annotate", annotate, True),
+                                 ("only_significant", only_significant, True),
+                                 ("stats_mode", stats_mode, "auto"), ("title", title, ""),
+                                 ("ylabel", ylabel, ""), ("xlabel", xlabel, ""),
+                                 ("colors", list(colors) if colors else None, None),
+                                 ("show_title", show_title, True)):
+        if value != default:
+            args.append(f"{name}={value!r}")
+    builder = "grouped_table_from_csv" if kind == "grouped" else "table_from_csv"
+    out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
+           + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
+           "# Part 1 redraws the figure; part 2 runs the statistics without staplot.",
+           "",
+           "# --- 1. the figure " + "-" * 60,
+           "from staplot import api",
+           "",
+           f"table = api.{builder}(r{str(path)!r})",
+           "fig, stats_record = api.plot(table, " + ", ".join(args) + ")",
+           'fig.savefig("plot.pdf")             # vector; or .png / .svg',
+           "print(stats_record)",
+           ""]
+    if not annotate:
+        return "\n".join(out)
+    out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
+    if kind == "grouped":
+        out += _grouped_code(path)
+        return "\n".join(out)
+    table = table_from_csv(path)
+    # the data come from the table itself, read and cleaned in the script as staplot does
+    out +=["import numpy as np", "import pandas as pd", "from scipy import stats", ""]
+    out += _loading_code(path)
+    layout = _detect_layout(read_table(path))
+    if layout == "long":
+        out += ["# long table: first column = group, second = value; rows without a group are skipped",
+                "group_col, value_col = df.columns[0], df.columns[1]",
+                "df = df[df[group_col].notna() & (df[group_col].astype(str).str.strip() != '')]",
+                "groups = {}",
+                "for g, v in zip(df[group_col].astype(str).str.strip(), pd.to_numeric(df[value_col], errors='coerce')):",
+                "    groups.setdefault(g, []).append(v)",
+                "groups = {g: [v for v in vs if np.isfinite(v)] for g, vs in groups.items()}"]
+    else:
+        out += ["# wide table: one column per group; empty, NA and non-numeric cells are left out",
+                "groups = {str(c): pd.to_numeric(df[c], errors='coerce').dropna().tolist() for c in df.columns}"]
+    out += ["groups = {g: v for g, v in groups.items() if v}",
+            "names = list(groups)",
+            "arrays = [np.asarray(groups[n], float) for n in names]",
+            'print({n: len(a) for n, a in zip(names, arrays)})      # n per group', ""]
+    if kind == "scatter":
+        out += ["# Pearson correlation of the first two columns (x, y), on the rows where both are numbers",
+                "x = pd.to_numeric(df.iloc[:, 0], errors='coerce')",
+                "y = pd.to_numeric(df.iloc[:, 1], errors='coerce')",
+                "both = x.notna() & y.notna()",
+                "r, p = stats.pearsonr(x[both], y[both])",
+                'print(f"r = {r:.3f}, R² = {r * r:.3f}, p = {p:.3g}, n = {int(both.sum())}")']
+        return "\n".join(out)
+    rec = auto_test(table, only_significant=only_significant,
+                    parametric=_STATS_MODE.get(stats_mode))
+    test = str(rec.get("test", ""))
+    out.append(f"# staplot chose: {test}" + (f" ({rec['normality']})" if rec.get("normality") else ""))
+    if test.startswith("Welch"):
+        out += ["t, p = stats.ttest_ind(arrays[0], arrays[1], equal_var=False)",
+                'print(f"{names[0]} vs {names[1]}: Welch t = {t:.3f}, p = {p:.3g}")']
+    elif test.startswith("Mann"):
+        out += ["u, p = stats.mannwhitneyu(arrays[0], arrays[1], alternative='two-sided')",
+                'print(f"{names[0]} vs {names[1]}: Mann-Whitney U = {u:.1f}, p = {p:.3g}")']
+    elif test.startswith("One-way"):
+        out += ["f, p = stats.f_oneway(*arrays)",
+                'print(f"one-way ANOVA: F = {f:.3f}, p = {p:.3g}")',
+                "from statsmodels.stats.multicomp import pairwise_tukeyhsd",
+                "values = np.concatenate(arrays)",
+                "labels = np.concatenate([[n] * len(a) for n, a in zip(names, arrays)])",
+                "print(pairwise_tukeyhsd(values, labels))      # p-adj: the brackets' p-values"]
+    elif test.startswith("Kruskal"):
+        out += ["h, p = stats.kruskal(*arrays)",
+                'print(f"Kruskal-Wallis: H = {h:.3f}, p = {p:.3g}")',
+                "# Dunn's test (1964) on the pooled ranks, tie-corrected, Bonferroni-corrected",
+                "pooled = np.concatenate(arrays)",
+                "ranks = stats.rankdata(pooled)",
+                "bounds = np.cumsum([0] + [len(a) for a in arrays])",
+                "mean_ranks = [ranks[bounds[k]:bounds[k + 1]].mean() for k in range(len(arrays))]",
+                "N = len(pooled)",
+                "_, tie_counts = np.unique(pooled, return_counts=True)",
+                "variance = N * (N + 1) / 12 - np.sum(tie_counts ** 3 - tie_counts) / (12 * (N - 1))",
+                "n_pairs = len(arrays) * (len(arrays) - 1) // 2",
+                "for i in range(len(arrays)):",
+                "    for j in range(i + 1, len(arrays)):",
+                "        z = abs(mean_ranks[i] - mean_ranks[j]) / np.sqrt(variance * (1 / len(arrays[i]) + 1 / len(arrays[j])))",
+                "        p_adj = min(1.0, 2 * stats.norm.sf(z) * n_pairs)",
+                '        print(f"{names[i]} vs {names[j]}: Dunn z = {z:.3f}, p (Bonferroni) = {p_adj:.3g}")']
+    else:
+        out.append(f"# {test or 'no test'}: nothing to compare")
+    return "\n".join(out)
+
+
+def _loading_code(path: str) -> list[str]:
+    """pandas code that reads *path* into ``df`` as read_table does: the separator and
+    decimal mark of a text table, or an Excel sheet without its blank margin and with
+    numbers typed as text read as numbers."""
+    file, sheet = split_sheet(path)
+    if not is_excel(file):
+        with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
+            sep, decimal = csv_format(f.read(4096))
+        lines = ["# the table, as staplot reads it",
+                 f"df = pd.read_csv(r{file!r}, sep={sep!r}, decimal={decimal!r}, encoding='utf-8-sig')"]
+        if decimal == ",":
+            lines += ["# a typo in a column keeps it as text: its decimal commas are read here",
+                      "for c in df.columns:",
+                      "    if df[c].dtype == object or str(df[c].dtype).startswith('str'):",
+                      "        df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce')"
+                      ".where(lambda s: s.notna(), df[c])"]
+        return lines + [""]
+    engine = "xlrd" if file.lower().endswith(".xls") else "openpyxl"
+    sheet_arg = (repr(int(sheet) - 1) if sheet and sheet.strip().isdigit() else repr(sheet)) if sheet else "0"
+    return ["# the table: the Excel sheet, as staplot reads it",
+            f"raw = pd.read_excel(r{file!r}, sheet_name={sheet_arg}, header=None, engine={engine!r})",
+            "raw = raw.dropna(how='all').dropna(axis=1, how='all')      # blank margin rows / columns",
+            "df = raw.iloc[1:].reset_index(drop=True)",
+            "df.columns = [str(v).strip() for v in raw.iloc[0]]          # first row = headers",
+            "for c in df.columns:                                        # numbers typed as text ('5,5')",
+            "    as_number = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce')",
+            "    if as_number.notna().sum() >= max(1, df[c].notna().sum() // 2):",
+            "        df[c] = as_number.where(as_number.notna(), df[c])",
+            ""]
+
+
+def _grouped_code(path: str) -> list[str]:
+    df = read_table(path)
+    if df.shape[1] < 3:
+        return ["# a grouped plot needs 3 columns (factor A, factor B, value)"]
+    lines = ["import pandas as pd", "import statsmodels.formula.api as smf",
+             "from statsmodels.stats.anova import anova_lm", ""]
+    lines += _loading_code(path)
+    lines += ["# long table: factor A, factor B, value (rows with a missing cell are left out)",
+              "data = df.iloc[:, :3].copy()",
+              "data.columns = ['A', 'B', 'value']",
+              "data['value'] = pd.to_numeric(data['value'], errors='coerce')",
+              "data = data.dropna()",
+              "data[['A', 'B']] = data[['A', 'B']].astype(str)"]
+    lines += ["model = smf.ols('value ~ C(A) * C(B)', data=data).fit()",
+              "print(anova_lm(model, typ=2))      # factor A, factor B and A x B rows"]
+    return lines
