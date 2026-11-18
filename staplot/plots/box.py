@@ -10,10 +10,15 @@ VIOLIN_CUT = 2.0        # bandwidths drawn past the data (seaborn's default)
 VIOLIN_HALF_WIDTH = 0.4
 
 
-def _violin(ax, x, arr, color):
+VIOLIN_INNERS = ("lines", "box", "none")
+
+
+def _violin(ax, x, arr, color, inner="lines"):
     """One violin at *x*: a Gaussian density (Scott's bandwidth) that tapers
-    VIOLIN_CUT bandwidths past the smallest / largest value, and inside it a thin
-    line over the range, a thick one over the quartiles and a white median dot."""
+    VIOLIN_CUT bandwidths past the smallest / largest value, and inside it (*inner*):
+    "lines", a thin line over the range, a thick one over the quartiles and a white
+    median dot; "box", a mini box plot (quartile box, median line, whiskers to the
+    furthest values within 1.5 IQR); "none", nothing."""
     arr = arr[np.isfinite(arr)]
     if arr.size == 0:
         return None
@@ -30,9 +35,21 @@ def _violin(ax, x, arr, color):
         ax.fill_betweenx(y, x - half, x + half, facecolor=color, alpha=0.7,
                          edgecolor="#333333", linewidth=0.8, zorder=2)
         top = float(y[-1])
-    ax.vlines(x, arr.min(), arr.max(), color="#333333", linewidth=1.0, zorder=3)
-    ax.vlines(x, q1, q3, color="#333333", linewidth=4.0, zorder=3)
-    ax.scatter([x], [med], s=14, color="white", edgecolors="#333333", linewidths=0.6, zorder=4)
+    if inner == "box":
+        from matplotlib.patches import Rectangle
+        iqr = q3 - q1
+        lo = float(arr[arr >= q1 - 1.5 * iqr].min())
+        hi = float(arr[arr <= q3 + 1.5 * iqr].max())
+        w = VIOLIN_HALF_WIDTH * 0.3
+        ax.vlines(x, lo, q1, color="#333333", linewidth=0.9, zorder=3)
+        ax.vlines(x, q3, hi, color="#333333", linewidth=0.9, zorder=3)
+        ax.add_patch(Rectangle((x - w / 2, q1), w, q3 - q1, facecolor="white", edgecolor="#333333",
+                               linewidth=0.9, zorder=3))
+        ax.hlines(med, x - w / 2, x + w / 2, color="#333333", linewidth=1.4, zorder=4)
+    elif inner != "none":
+        ax.vlines(x, arr.min(), arr.max(), color="#333333", linewidth=1.0, zorder=3)
+        ax.vlines(x, q1, q3, color="#333333", linewidth=4.0, zorder=3)
+        ax.scatter([x], [med], s=14, color="white", edgecolors="#333333", linewidths=0.6, zorder=4)
     return top                  # the brackets go above the tapered tip, not the data
 
 
@@ -45,6 +62,7 @@ def plot_box(
     ylabel: str = "",
     colors: list | None = None,
     sig_pairs: list | None = None,
+    violin_inner: str = "lines",
 ) -> matplotlib.figure.Figure:
     cols = [c for c in table.columns if len(c.valid_values()) > 0]
     names = [c.name for c in cols]
@@ -68,7 +86,7 @@ def plot_box(
         # Prism draw it, with a small box inside (range, quartiles, median).
         violin_tops = {}
         for i, arr in enumerate(arrays):
-            violin_tops[names[i]] = _violin(ax, i, np.asarray(arr, float), palette[i])
+            violin_tops[names[i]] = _violin(ax, i, np.asarray(arr, float), palette[i], inner=violin_inner)
     else:
         bp = ax.boxplot(
             arrays,

@@ -118,3 +118,18 @@ def test_rename_groups_and_tilt_the_names_both_ways(csv):
     assert ticks[0].get_rotation() == 315 and ticks[0].get_ha() == "left"      # "\" starts at its tick
     with pytest.raises(ValueError, match="no group named"):
         api.plot(t, "box", rename={"nope": "x"})
+
+
+def test_points_off_and_a_box_inside_the_violins(csv):
+    """"remove the point cloud"; "add a mini box plot within the violin plot"."""
+    t = api.table_from_csv(csv)
+    def dots(fig):
+        return sum(len(c.get_offsets()) for c in fig.axes[0].collections if type(c).__name__ == "PathCollection")
+    with_points = api.plot(t, "violin", annotate=False)[0]
+    without = api.plot(t, "violin", annotate=False, show_points=False)[0]
+    assert dots(without) == 3 and dots(with_points) > 20          # the 3 median dots stay
+    boxed = api.plot(t, "violin", annotate=False, show_points=False, violin_inner="box")[0]
+    assert len(boxed.axes[0].patches) == 3 and dots(boxed) == 0
+    assert dots(api.plot(t, "bar", annotate=False, show_points=False)[0]) == 0
+    with pytest.raises(ValueError):
+        api.plot(t, "violin", violin_inner="dots")

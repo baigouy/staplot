@@ -646,7 +646,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          aspect: float | None = None, width: float | None = None, height: float | None = None,
          font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
          xtick_rotation: float | None = None, legend: str | None = None,
-         show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None):
+         show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
+         show_points: bool = True, violin_inner: str = "lines"):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"``, or
@@ -678,6 +679,9 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
         way), -45 tilts them "\\" (rotated right);
       * *rename* — ``{"mutA": "mutant A"}``: the names shown for groups (axis, legend
         and the statistics), the table unchanged;
+      * *show_points* — False: no individual points on bar / box / violin plots;
+      * *violin_inner* — inside each violin: ``"lines"`` (range, quartiles, median
+        dot), ``"box"`` (a mini box plot) or ``"none"``;
       * *legend* — ``"inside"``, ``"outside"`` (right of the axes) or ``"none"``;
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
@@ -701,12 +705,15 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                                  parametric=parametric)
         sig_pairs = stats_record["sig_pairs"] or None
 
+    if violin_inner not in ("lines", "box", "none"):
+        raise ValueError("violin_inner must be 'lines', 'box' or 'none'")
     if kind == "bar":
         fig = _plots.plot_bar(table, error_type=error, title=title, ylabel=ylabel,
-                              colors=colors, sig_pairs=sig_pairs)
+                              colors=colors, sig_pairs=sig_pairs, show_points=show_points)
     elif kind in ("box", "violin"):
         fig = _plots.plot_box(table, plot_type=kind, title=title, ylabel=ylabel,
-                              colors=colors, sig_pairs=sig_pairs)
+                              colors=colors, sig_pairs=sig_pairs, show_points=show_points,
+                              violin_inner=violin_inner)
     elif kind == "scatter":
         fig = _plots.plot_scatter(table, title=title, xlabel=xlabel, ylabel=ylabel,
                                   colors=colors)
@@ -844,7 +851,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               width: float | None = None, height: float | None = None,
               font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
               xtick_rotation: float | None = None, legend: str | None = None,
-              show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None) -> str:
+              show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
+              show_points: bool = True, violin_inner: str = "lines") -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -872,7 +880,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("ylim", list(ylim) if ylim else None, None), ("log_y", log_y, False),
                                  ("xtick_rotation", xtick_rotation, None), ("legend", legend, None),
                                  ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True),
-                                 ("rename", dict(rename) if rename else None, None)):
+                                 ("rename", dict(rename) if rename else None, None),
+                                 ("show_points", show_points, True), ("violin_inner", violin_inner, "lines")):
         if value != default:
             args.append(f"{name}={value!r}")
     builder = "grouped_table_from_csv" if kind == "grouped" else "table_from_csv"
