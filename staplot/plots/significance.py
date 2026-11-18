@@ -79,7 +79,7 @@ def add_significance_brackets(
         # Label
         mid = (xa + xb) / 2
         bold = label not in ("ns", "n/a")
-        ax.text(
+        txt = ax.text(
             mid, y + tip * 0.3, label,
             ha="center", va="bottom",
             fontsize=fontsize,
@@ -87,6 +87,7 @@ def add_significance_brackets(
             color=color,
             gid="brackets",
         )
+        txt._staplot_p = p_val
 
     # Expand y-axis to show topmost bracket + padding
     if drawn:

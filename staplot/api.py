@@ -58,7 +58,7 @@ __all__ = [
     "PLOT_KINDS",
 ]
 
-PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin")
+PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired")
 VIOLIN_SIDES = ("both", "left", "right")
 # the parts of a plot whose colour can be set (element_colors); the groups' own colours
 # are *colors*
@@ -74,6 +74,9 @@ PLOT_ELEMENTS = {
     "fit": "the regression line (scatter)",
     "axes": "the axes, ticks and their labels",
     "background": "the plot's background",
+    "mean": "the mean marker (show_mean)",
+    "pair_lines": "the lines joining each subject's values (paired)",
+    "reference": "the reference lines (hlines)",
 }
 _PART_TAGS = set(PLOT_ELEMENTS) | {"bar", "box", "violin"}
 
@@ -778,6 +781,62 @@ def auto_test(table: DataTable, only_significant: bool = True,
     return rec
 
 
+def paired_test(table: DataTable, only_significant: bool = True, parametric: bool | None = None) -> dict:
+    """Repeated measures (one row per subject, one column per condition: before / after,
+    day 1 / 2 / 3), on the subjects measured in every column: 2 conditions -> paired
+    t-test (differences normal) or Wilcoxon signed-rank; more -> repeated-measures ANOVA
+    or Friedman, then pairwise paired tests (Bonferroni). *parametric* forces the family."""
+    names = [c.name for c in table.columns if len(c.valid_values()) > 0]
+    rec = {"test": None, "n_subjects": 0, "comparisons": [], "sig_pairs": []}
+    if len(names) < 2:
+        rec["error"] = "a paired plot needs two columns or more (one per condition)"
+        return rec
+    arrays = table.paired_arrays(*names)
+    n = len(arrays[0])
+    rec["n_subjects"] = n
+    if n < 3:
+        rec["error"] = f"{n} subject(s) measured in every column: too few to test"
+        return rec
+    diffs = [arrays[j] - arrays[i] for i in range(len(arrays)) for j in range(i + 1, len(arrays))]
+    normal = all(_is_normal(d) for d in diffs) if parametric is None else bool(parametric)
+    rec["normality"] = ("forced" if parametric is not None else
+                        ("differences normal (Shapiro)" if normal else "differences not normal (Shapiro)"))
+
+    def pair_p(a, b):
+        if normal:
+            return float(_sp.ttest_rel(a, b).pvalue)
+        try:
+            return float(_sp.wilcoxon(a, b).pvalue)
+        except ValueError:                      # all differences zero
+            return 1.0
+    if len(names) == 2:
+        rec["test"] = "Paired t-test" if normal else "Wilcoxon signed-rank test"
+        rec["comparisons"] = [_cmp(names[0], names[1], pair_p(arrays[0], arrays[1]))]
+        shown = True
+    else:
+        if normal:
+            import pandas as pd
+            from statsmodels.stats.anova import AnovaRM
+            long = pd.DataFrame([(s_i, names[k], arrays[k][s_i]) for k in range(len(names)) for s_i in range(n)],
+                                columns=["subject", "condition", "value"])
+            res = AnovaRM(long, "value", "subject", within=["condition"]).fit()
+            p_omni = float(res.anova_table["Pr > F"].iloc[0])
+            rec["test"] = "Repeated-measures ANOVA + paired t-tests (Bonferroni)"
+            rec["omnibus"] = {"stat_name": "F", "stat": float(res.anova_table["F Value"].iloc[0]), "p": p_omni}
+        else:
+            stat, p_omni = _sp.friedmanchisquare(*arrays)
+            rec["test"] = "Friedman + Wilcoxon signed-rank (Bonferroni)"
+            rec["omnibus"] = {"stat_name": "chi2", "stat": float(stat), "p": float(p_omni)}
+        k = len(names) * (len(names) - 1) // 2
+        rec["comparisons"] = [_cmp(names[i], names[j], min(1.0, pair_p(arrays[i], arrays[j]) * k))
+                              for i in range(len(names)) for j in range(i + 1, len(names))]
+        shown = bool(np.isfinite(rec["omnibus"]["p"]) and rec["omnibus"]["p"] < 0.05)
+        rec["posthoc_shown"] = shown
+    rec["sig_pairs"] = [(c["a"], c["b"], c["p"]) for c in rec["comparisons"]
+                        if shown and np.isfinite(c["p"]) and (c["p"] < 0.05 or not only_significant)]
+    return rec
+
+
 def _cmp(a, b, p):
     return {"a": str(a), "b": str(b), "p": float(p),
             "stars": significance_stars(p), "p_text": format_p(p)}
@@ -861,7 +920,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          xtick_rotation: float | None = None, legend: str | None = None,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
-         element_colors: dict | None = None, ax=None):
+         element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
+         p_format: str = "stars", hlines=None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -910,21 +970,92 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
     *ax*: draw into these axes (one facet, :func:`plot_facets`) instead of a new figure.
+    Journal details: *show_n* writes each group's n under its name ("WT\n(n=12)");
+    *show_mean* marks each group's mean (a white diamond) on box / violin plots;
+    *p_format* "stars" (default) or "p" (the p-value itself, "p=0.003") on the brackets;
+    *hlines*: reference lines, ``[1.0]`` or ``[{"y": 100, "label": "control", "color":
+    "grey", "style": "--"}]``.
     """
+    extras = {"show_n": show_n, "show_mean": show_mean, "p_format": p_format, "hlines": hlines}
     if ax is not None:
         with _plots.styles.drawing_into(ax):
-            return _untagged(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
+            return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                              stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
                              show_title=show_title, order=order, show_ylabel=show_ylabel,
                              show_xlabel=show_xlabel, rename=rename, show_points=show_points,
-                             violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax))
-    return _untagged(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
+                             violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax),
+                table, kind, ax, element_colors, **extras))
+    return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                      stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
                      show_title=show_title, aspect=aspect, width=width, height=height,
                      font_scale=font_scale, order=order, ylim=ylim, log_y=log_y,
                      xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
                      show_xlabel=show_xlabel, rename=rename, show_points=show_points,
-                     violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors))
+                     violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors),
+                     table, kind, None, element_colors, **extras))
+
+
+P_FORMATS = ("stars", "p")
+
+
+def _details(result, table, kind, ax=None, element_colors=None, *, show_n=False, show_mean=False,
+             p_format="stars", hlines=None):
+    """The journal details of a drawn plot: n under the group names, mean markers,
+    p-values written out, reference lines."""
+    fig, rec = result
+    if p_format not in P_FORMATS:
+        raise ValueError("p_format must be 'stars' or 'p' (the p-value itself)")
+    axes = [ax] if ax is not None else fig.axes[:1]
+    groups = table.group_arrays() if isinstance(table, DataTable) else None
+    for a in axes:
+        if show_n and groups and kind in ("bar", "box", "violin", "paired"):
+            n = {str(k): int(np.isfinite(np.asarray(v, float)).sum()) for k, v in groups.items()}
+            labels = [t.get_text() for t in a.get_xticklabels()]
+            # the shown names may be renamed: n follows the position
+            ns = [n.get(lb) for lb in labels]
+            if any(v is None for v in ns) and len(n) == len(labels):
+                ns = list(n.values())
+            a.set_xticks(a.get_xticks(), [f"{lb}\n(n={v})" if v is not None else lb for lb, v in zip(labels, ns)])
+        if show_n and kind in ("grouped", "split_violin") and not isinstance(table, DataTable):
+            total = sum(1 for g in table.data.values() for cell in g.values() for v in cell
+                        if v is not None and np.isfinite(float(v)))
+            a.annotate(f"n={total}", xy=(1, 1), xycoords="axes fraction", ha="right", va="bottom",
+                       fontsize=7, color="#444444")
+        if show_mean and groups and kind in ("box", "violin"):
+            for i, (name, vals) in enumerate(groups.items()):
+                arr = np.asarray(vals, float)
+                arr = arr[np.isfinite(arr)]
+                if arr.size:
+                    m = a.scatter([i], [arr.mean()], marker="D", s=22, color="white", edgecolors="#222222",
+                                  linewidths=0.8, zorder=6)
+                    m._staplot_part = "mean"
+        if p_format == "p":
+            from .stats.descriptive import format_p
+            for t in a.texts:
+                p = getattr(t, "_staplot_p", None)
+                if p is not None:
+                    t.set_text(format_p(p))
+                    t.set_fontweight("normal")
+                    t.set_fontsize(min(t.get_fontsize(), 7))
+        for line in (hlines or []):
+            spec = line if isinstance(line, dict) else {"y": line}
+            try:
+                y = float(spec["y"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError('hlines: numbers, or {"y": 100, "label": "control", "color": "grey", '
+                                 '"style": "--"}') from None
+            ref = a.axhline(y, color=spec.get("color", "#888888"), linestyle=spec.get("style", "--"),
+                            linewidth=float(spec.get("width", 0.9)), zorder=1)
+            ref._staplot_part = "reference"
+            if spec.get("label"):
+                a.annotate(str(spec["label"]), xy=(1, y), xycoords=("axes fraction", "data"), xytext=(-2, 2),
+                           textcoords="offset points", ha="right", va="bottom", fontsize=7,
+                           color=spec.get("color", "#666666"))
+    if element_colors and (show_mean or hlines):
+        apply_element_colors(fig, {k: v for k, v in element_colors.items() if k in ("mean", "reference")})
+    if ax is None and (show_n or p_format == "p"):
+        fig.tight_layout()
+    return fig, rec
 
 
 def plot_part(artist) -> str | None:
@@ -975,6 +1106,9 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
         stats_record = auto_test(table, only_significant=only_significant,
                                  parametric=parametric)
         sig_pairs = stats_record["sig_pairs"] or None
+    if annotate and kind == "paired":
+        stats_record = paired_test(table, only_significant=only_significant, parametric=parametric)
+        sig_pairs = stats_record.get("sig_pairs") or None
 
     if violin_inner not in ("lines", "box", "none"):
         raise ValueError("violin_inner must be 'lines', 'box' or 'none'")
@@ -991,6 +1125,13 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
         fig = _plots.plot_box(table, plot_type=kind, title=title, ylabel=ylabel,
                               colors=colors, sig_pairs=sig_pairs, show_points=show_points,
                               violin_inner=violin_inner, violin_side=violin_side)
+    elif kind == "paired":
+        if not isinstance(table, DataTable):
+            raise ValueError("a paired plot needs a table with one column per condition and one row per "
+                             "subject (before, after)")
+        fig = _plots.plot_before_after(table, error_type=error if error != "none" else "sd",
+                                       show_mean=error != "none", title=title, ylabel=ylabel,
+                                       colors=colors, sig_pairs=sig_pairs)
     elif kind == "scatter":
         fig = _plots.plot_scatter(table, title=title, xlabel=xlabel, ylabel=ylabel,
                                   colors=colors)
@@ -1138,6 +1279,8 @@ def facet_stats(path: str, kind: str, facet: str, facet_row: str | None = None, 
             out[label] = {"error": err}
         elif kind in ("bar", "box", "violin"):
             out[label] = auto_test(table, only_significant=only_significant, parametric=parametric)
+        elif kind == "paired":
+            out[label] = paired_test(table, only_significant=only_significant, parametric=parametric)
         elif kind in ("grouped", "split_violin"):
             rec = two_way_test(table)
             if kind == "split_violin" and "error" not in rec:
@@ -1261,7 +1404,7 @@ def apply_element_colors(fig, element_colors: dict) -> None:
             if gid not in colors:
                 continue
             c = colors[gid]
-            if gid == "points":
+            if gid in ("points", "mean"):
                 artist.set_facecolor(c)
             elif gid == "outliers" and hasattr(artist, "set_markeredgecolor"):
                 artist.set_markeredgecolor(c)
@@ -1419,7 +1562,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
               show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
               columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
-              facet: str | None = None, facet_row: str | None = None, ncols: int | None = None) -> str:
+              facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
+              show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1450,7 +1594,9 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("rename", dict(rename) if rename else None, None),
                                  ("show_points", show_points, True), ("violin_inner", violin_inner, "lines"),
                                  ("violin_side", violin_side, "both"),
-                                 ("element_colors", dict(element_colors) if element_colors else None, None)):
+                                 ("element_colors", dict(element_colors) if element_colors else None, None),
+                                 ("show_n", show_n, False), ("show_mean", show_mean, False),
+                                 ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
@@ -1496,6 +1642,32 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
         if kind == "split_violin":
             out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns,
                                where=where, skip_rows=skip_rows)
+        return "\n".join(out)
+    if kind == "paired":
+        table = table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
+        rec = paired_test(table, only_significant=only_significant, parametric=_STATS_MODE.get(stats_mode))
+        out += ["import numpy as np", "import pandas as pd", "from scipy import stats", ""]
+        out += _loading_code(path, columns, where, skip_rows)
+        out += ["# one row per subject, one column per condition: the subjects measured in every column",
+                "data = df.apply(pd.to_numeric, errors='coerce').dropna()",
+                "names = list(data.columns)",
+                "arrays = [data[n].to_numpy(float) for n in names]",
+                "print(len(data), 'subjects')",
+                f"# staplot chose: {rec.get('test')} ({rec.get('normality')})"]
+        test = str(rec.get("test") or "")
+        pair = ("stats.ttest_rel(arrays[i], arrays[j])" if "t-test" in test
+                else "stats.wilcoxon(arrays[i], arrays[j])")
+        if test.startswith("Repeated"):
+            out += ["from statsmodels.stats.anova import AnovaRM",
+                    "long = data.reset_index().melt(id_vars='index', var_name='condition', value_name='value')",
+                    "print(AnovaRM(long, 'value', 'index', within=['condition']).fit())"]
+        elif test.startswith("Friedman"):
+            out += ["print(stats.friedmanchisquare(*arrays))"]
+        k = "len(names) * (len(names) - 1) // 2" if len(rec.get("comparisons") or []) > 1 else "1"
+        out += ["for i in range(len(names)):",
+                "    for j in range(i + 1, len(names)):",
+                f"        r = {pair}",
+                f"        print(names[i], 'vs', names[j], r, 'p (Bonferroni) =', min(1.0, r.pvalue * {k}))"]
         return "\n".join(out)
     table = table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
     # the data come from the table itself, read and cleaned in the script as staplot does

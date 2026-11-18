@@ -19,15 +19,16 @@ def plot_before_after(
     title: str = "",
     ylabel: str = "",
     colors: list | None = None,
+    sig_pairs: list | None = None,
 ) -> matplotlib.figure.Figure:
     cols = table.columns
     names = [c.name for c in cols]
     if not names:
-        fig, ax = plt.subplots()
+        fig, ax = styles.subplots()
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return fig
 
-    fig, ax = plt.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
+    fig, ax = styles.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
     x_pos = list(range(len(names)))
 
     # Build index-aware data: use the intersection of valid row indices across all columns
@@ -55,6 +56,7 @@ def plot_before_after(
                 alpha=line_alpha,
                 linewidth=0.9,
                 zorder=2,
+                gid="pair_lines",
             )
 
     # --- scatter points ---
@@ -72,6 +74,7 @@ def plot_before_after(
             linewidths=0.4,
             edgecolors="white",
             picker=5,
+            gid="points",
         )
         # exclude_all=True so clicking removes the subject from all time-points
         sc._staplot_meta = {"column": col.name, "rows": row_idxs, "exclude_all": True}
@@ -106,5 +109,13 @@ def plot_before_after(
     ax.set_xticklabels(names, rotation=rotation, ha="right" if rotation else "center")
     ax.set_ylabel(ylabel or "Value")
     ax.set_title(title or table.name)
-    fig.tight_layout()
+    if sig_pairs:
+        from .significance import add_significance_brackets
+        tops = {}
+        for col, (vals, _r) in zip(cols, per_col_data):
+            if len(vals):
+                tops[col.name] = float(np.max(vals))
+        add_significance_brackets(ax, names, sig_pairs, tops)
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig

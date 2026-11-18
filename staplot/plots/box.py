@@ -224,9 +224,10 @@ def plot_split_violin(
             ax.plot([i - 0.2, i - 0.2, i + 0.2, i + 0.2], [y - tip, y, y, y - tip], "-",
                     color="#222222", lw=1.0, clip_on=False, gid="brackets")
             label = significance_stars(p)
-            ax.text(i, y + tip * 0.3, label, ha="center", va="bottom", fontsize=9,
-                    fontweight="bold" if label not in ("ns", "n/a") else "normal", color="#222222",
-                    gid="brackets")
+            txt = ax.text(i, y + tip * 0.3, label, ha="center", va="bottom", fontsize=9,
+                          fontweight="bold" if label not in ("ns", "n/a") else "normal", color="#222222",
+                          gid="brackets")
+            txt._staplot_p = p
             new_top = max(new_top, y + 0.1 * rng_y)
         if new_top > y_hi:
             ax.set_ylim(top=new_top)

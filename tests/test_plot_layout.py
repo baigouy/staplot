@@ -270,3 +270,51 @@ def test_facets_one_plot_per_value_each_with_its_statistics(tidy):
     code = api.plot_code(tidy, "box", facet="treatment", columns=["genotype", "area"])
     assert "api.plot_facets(" in code and "facet='treatment'" in code
     exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_journal_details_n_mean_p_values_reference_lines(csv, tidy):
+    """"add the n", "show the p values not stars", "a dashed line at 100", "mark the mean"."""
+    t = api.table_from_csv(csv)
+    fig = api.plot(t, "box", show_n=True, show_mean=True, p_format="p",
+                   hlines=[10, {"y": 12, "label": "control"}], element_colors={"mean": "red"})[0]
+    ax = fig.axes[0]
+    assert [x.get_text() for x in ax.get_xticklabels()] == ["WT\n(n=8)", "mutA\n(n=8)", "mutB\n(n=8)"]
+    brackets = [x for x in ax.texts if api.plot_part(x) == "brackets"]
+    assert brackets and all(x.get_text().startswith("p ") for x in brackets)
+    assert len([a for a in ax.findobj() if api.plot_part(a) == "mean"]) == 3
+    assert len([a for a in ax.findobj() if api.plot_part(a) == "reference"]) == 2
+    assert "control" in [x.get_text() for x in ax.texts]
+    renamed = api.plot(t, "violin", show_n=True, rename={"muta": "mutant A"})[0]
+    assert "mutant A\n(n=8)" in [x.get_text() for x in renamed.axes[0].get_xticklabels()]
+    gt = api.grouped_table_from_csv(tidy, columns=["genotype", "sex", "area"])
+    fig = api.plot(gt, "split_violin", show_n=True, p_format="p")[0]
+    assert "n=144" in [x.get_text() for x in fig.axes[0].texts]
+    with pytest.raises(ValueError, match="p_format"):
+        api.plot(t, "box", p_format="words")
+    with pytest.raises(ValueError, match="hlines"):
+        api.plot(t, "box", hlines=["high"])
+    fig, rec = api.plot_facets(tidy, "box", "treatment", columns=["genotype", "area"], show_n=True)
+    assert all("(n=" in x.get_text() for a in fig.axes if a.get_visible() for x in a.get_xticklabels())
+
+
+def test_paired_plot_joins_each_subject_and_uses_paired_tests(tmp_path):
+    """Before / after on the same mice: lines join each mouse, a paired test."""
+    rng = np.random.default_rng(4)
+    b = rng.normal(10, 2, 12)
+    path = tmp_path / "paired.csv"
+    pd.DataFrame({"before": b, "after": b + rng.normal(1.5, 0.6, 12), "washout": b + rng.normal(0.2, 0.6, 12)}
+                 ).to_csv(path, index=False)
+    t = api.table_from_csv(str(path))
+    fig, rec = api.plot(t, "paired", show_n=True)
+    assert rec["n_subjects"] == 12 and rec["test"].startswith(("Repeated", "Friedman"))
+    lines = [a for a in fig.axes[0].findobj() if api.plot_part(a) == "pair_lines"]
+    assert len(lines) == 12
+    assert [x.get_text() for x in fig.axes[0].get_xticklabels()][0] == "before\n(n=12)"
+    two = api.table_from_csv(str(path), columns=["before", "after"])
+    rec2 = api.paired_test(two)
+    assert rec2["test"] in ("Paired t-test", "Wilcoxon signed-rank test") and rec2["comparisons"][0]["p"] < 0.001
+    # a paired test sees the pairs: the same data unpaired is far less significant
+    assert rec2["comparisons"][0]["p"] < api.auto_test(two)["comparisons"][0]["p"]
+    code = api.plot_code(str(path), "paired")
+    assert "ttest_rel" in code or "wilcoxon" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
