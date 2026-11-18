@@ -687,7 +687,7 @@ def _dunn_pairs(names, arrays):
 
 
 def auto_test(table: DataTable, only_significant: bool = True,
-              parametric: bool | None = None) -> dict:
+              parametric: bool | None = None, control: str | None = None) -> dict:
     """Pick and run the appropriate comparison for *table*'s groups.
 
     Returns a JSON-serialisable dict with the chosen test, omnibus result (for
@@ -701,8 +701,17 @@ def auto_test(table: DataTable, only_significant: bool = True,
     per-group Shapiro normality check; ``True`` forces the parametric branch
     (t-test / ANOVA), ``False`` forces the non-parametric branch (Mann-Whitney /
     Kruskal).
+
+    *control*: compare every group with this one only ("compare everything to WT"):
+    one-way ANOVA + Dunnett's test, or Kruskal-Wallis + Mann-Whitney against the control
+    (Bonferroni over the k-1 comparisons).
     """
     groups = table.group_arrays()
+    if control is not None:
+        low = {str(n).lower(): n for n in groups}
+        if str(control).lower() not in low:
+            raise ValueError(f"no group {control!r} to compare with; the groups are {', '.join(map(str, groups))}")
+        control = low[str(control).lower()]
     names = [n for n in groups if len(groups[n]) > 0]
     arrays = [np.asarray(groups[n], dtype=float) for n in names]
     k = len(names)
@@ -752,6 +761,28 @@ def auto_test(table: DataTable, only_significant: bool = True,
                     "absence of a bracket is not evidence of no effect.")
         p = float(r.details["p"])
         rec["comparisons"] = [_cmp(names[0], names[1], p)]
+    elif control is not None:
+        ci = names.index(control)
+        others = [i for i in range(k) if i != ci]
+        if normal:
+            F, p_omni = _sp.f_oneway(*arrays)
+            rec["test"] = f"One-way ANOVA + Dunnett's test (vs {control})"
+            rec["omnibus"] = {"stat_name": "F", "stat": float(F), "p": float(p_omni)}
+            rec["correction"] = "Dunnett (family-wise, vs control)"
+            res = _sp.dunnett(*[arrays[i] for i in others], control=arrays[ci])
+            pairs = [(control, names[i], float(p)) for i, p in zip(others, res.pvalue)]
+        else:
+            H, p_omni = _sp.kruskal(*arrays)
+            rec["test"] = f"Kruskal-Wallis + Mann-Whitney vs {control} (Bonferroni)"
+            rec["omnibus"] = {"stat_name": "H", "stat": float(H), "p": float(p_omni)}
+            rec["correction"] = f"Bonferroni (x{len(others)})"
+            pairs = [(control, names[i], min(1.0, float(_sp.mannwhitneyu(arrays[ci], arrays[i],
+                                                                          alternative="two-sided").pvalue)
+                                             * len(others))) for i in others]
+        rec["control"] = control
+        rec["comparisons"] = [_cmp(a, b, p) for a, b, p in pairs]
+        # Dunnett controls the family-wise error itself: its brackets do not wait for the omnibus
+        omnibus_sig = True
     else:
         if normal:
             F, p_omni = _sp.f_oneway(*arrays)
@@ -921,7 +952,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
-         p_format: str = "stars", hlines=None):
+         p_format: str = "stars", hlines=None, control: str | None = None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -975,6 +1006,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     *p_format* "stars" (default) or "p" (the p-value itself, "p=0.003") on the brackets;
     *hlines*: reference lines, ``[1.0]`` or ``[{"y": 100, "label": "control", "color":
     "grey", "style": "--"}]``.
+    *control*: compare every group with this one only (Dunnett's test, or Mann-Whitney
+    against it): bar, box, violin.
     """
     extras = {"show_n": show_n, "show_mean": show_mean, "p_format": p_format, "hlines": hlines}
     if ax is not None:
@@ -983,7 +1016,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                              stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
                              show_title=show_title, order=order, show_ylabel=show_ylabel,
                              show_xlabel=show_xlabel, rename=rename, show_points=show_points,
-                             violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax),
+                             violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax,
+                             control=control),
                 table, kind, ax, element_colors, **extras))
     return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                      stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
@@ -991,7 +1025,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                      font_scale=font_scale, order=order, ylim=ylim, log_y=log_y,
                      xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
                      show_xlabel=show_xlabel, rename=rename, show_points=show_points,
-                     violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors),
+                     violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors,
+                     control=control),
                      table, kind, None, element_colors, **extras))
 
 
@@ -1085,7 +1120,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
               log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
               show_xlabel: bool = True, rename=None, show_points: bool = True,
               violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
-              facet_ax=None):
+              facet_ax=None, control=None):
     kind = kind.lower()
     # the y label the table gives (its value column: "area (um2)") when none is asked
     ylabel = ylabel or getattr(table, "value_name", "") or ""
@@ -1104,7 +1139,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
     sig_pairs = None
     if annotate and kind in ("bar", "box", "violin"):
         stats_record = auto_test(table, only_significant=only_significant,
-                                 parametric=parametric)
+                                 parametric=parametric, control=control)
         sig_pairs = stats_record["sig_pairs"] or None
     if annotate and kind == "paired":
         stats_record = paired_test(table, only_significant=only_significant, parametric=parametric)
@@ -1269,7 +1304,8 @@ def facet_tables(path: str, kind: str, facet: str, facet_row: str | None = None,
 
 
 def facet_stats(path: str, kind: str, facet: str, facet_row: str | None = None, *, columns=None,
-                where=None, skip_rows=None, only_significant: bool = True, stats_mode: str = "auto") -> dict:
+                where=None, skip_rows=None, only_significant: bool = True, stats_mode: str = "auto",
+                control: str | None = None) -> dict:
     """{facet label: the statistics of that facet} (the tests plot_facets draws)."""
     parametric = _STATS_MODE.get(stats_mode)
     out = {}
@@ -1278,7 +1314,8 @@ def facet_stats(path: str, kind: str, facet: str, facet_row: str | None = None, 
         if table is None:
             out[label] = {"error": err}
         elif kind in ("bar", "box", "violin"):
-            out[label] = auto_test(table, only_significant=only_significant, parametric=parametric)
+            out[label] = auto_test(table, only_significant=only_significant, parametric=parametric,
+                                   control=control)
         elif kind == "paired":
             out[label] = paired_test(table, only_significant=only_significant, parametric=parametric)
         elif kind in ("grouped", "split_violin"):
@@ -1563,7 +1600,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
               columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
-              show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None) -> str:
+              show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
+              control: str | None = None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1596,7 +1634,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("violin_side", violin_side, "both"),
                                  ("element_colors", dict(element_colors) if element_colors else None, None),
                                  ("show_n", show_n, False), ("show_mean", show_mean, False),
-                                 ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None)):
+                                 ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None),
+                                 ("control", control, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
@@ -1704,8 +1743,27 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     if order:
         table = _reordered(table, order)
     rec = auto_test(table, only_significant=only_significant,
-                    parametric=_STATS_MODE.get(stats_mode))
+                    parametric=_STATS_MODE.get(stats_mode), control=control)
     test = str(rec.get("test", ""))
+    if rec.get("control"):
+        c = rec["control"]
+        out.append(f"# staplot chose: {test}" + (f" ({rec['normality']})" if rec.get("normality") else ""))
+        out.append(f"ci = names.index({c!r})")
+        if "Dunnett" in test:
+            out += ["f, p = stats.f_oneway(*arrays)",
+                    'print(f"one-way ANOVA: F = {f:.3f}, p = {p:.3g}")',
+                    "others = [i for i in range(len(names)) if i != ci]",
+                    "res = stats.dunnett(*[arrays[i] for i in others], control=arrays[ci])",
+                    "for i, p in zip(others, res.pvalue):",
+                    f"    print({c!r}, 'vs', names[i], 'Dunnett p =', p)"]
+        else:
+            out += ["h, p = stats.kruskal(*arrays)",
+                    'print(f"Kruskal-Wallis: H = {h:.3f}, p = {p:.3g}")',
+                    "others = [i for i in range(len(names)) if i != ci]",
+                    "for i in others:",
+                    "    p = stats.mannwhitneyu(arrays[ci], arrays[i], alternative='two-sided').pvalue",
+                    f"    print({c!r}, 'vs', names[i], 'p (Bonferroni) =', min(1.0, p * len(others)))"]
+        return "\n".join(out)
     out.append(f"# staplot chose: {test}" + (f" ({rec['normality']})" if rec.get("normality") else ""))
     if test.startswith("Welch"):
         out += ["t, p = stats.ttest_ind(arrays[0], arrays[1], equal_var=False)",

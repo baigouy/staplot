@@ -318,3 +318,18 @@ def test_paired_plot_joins_each_subject_and_uses_paired_tests(tmp_path):
     code = api.plot_code(str(path), "paired")
     assert "ttest_rel" in code or "wilcoxon" in code
     exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_compare_every_group_with_a_control(csv):
+    """"compare everything to WT": Dunnett's test, not every pair."""
+    t = api.table_from_csv(csv)
+    fig, rec = api.plot(t, "box", control="wt", only_significant=False)
+    assert rec["control"] == "WT" and "Dunnett" in rec["test"]
+    assert {(c["a"], c["b"]) for c in rec["comparisons"]} == {("WT", "mutA"), ("WT", "mutB")}
+    rec = api.auto_test(t, control="WT", parametric=False)
+    assert "Mann-Whitney vs WT" in rec["test"] and len(rec["comparisons"]) == 2
+    with pytest.raises(ValueError, match="no group"):
+        api.auto_test(t, control="KO")
+    code = api.plot_code(csv, "box", control="WT")
+    assert "stats.dunnett(" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
