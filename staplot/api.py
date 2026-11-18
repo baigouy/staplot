@@ -626,8 +626,11 @@ def _annotate_two_way(fig, rec):
         tail = "" if e["stars"] in ("ns", "n/a") else " " + e["stars"]
         parts.append(f"{e['effect']}: p={e['p']:.3g}{tail}")
     if parts:
-        fig.text(0.5, 0.005, "Two-way ANOVA — " + "; ".join(parts),
-                 ha="center", va="bottom", fontsize=7, color="#444444")
+        # one effect per line: on one line it was wider than the plot, and a panel sized
+        # to it squeezed the bars (PyFigures, 2026-11-18)
+        fig.text(0.5, 0.005, "Two-way ANOVA\n" + "\n".join(parts),
+                 ha="center", va="bottom", fontsize=7, color="#444444", linespacing=1.25)
+        fig._staplot_note_lines = len(parts) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +646,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          aspect: float | None = None, width: float | None = None, height: float | None = None,
          font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
          xtick_rotation: float | None = None, legend: str | None = None,
-         show_ylabel: bool = True, show_xlabel: bool = True):
+         show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"``, or
@@ -670,12 +673,19 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
       * *order* — the groups in this order (names; groups left out are dropped);
       * *ylim* — ``(low, high)`` of the y axis (``None`` for either keeps it automatic);
       * *log_y* — a log y axis;
-      * *xtick_rotation* — degrees for the x tick labels (long group names);
+      * *xtick_rotation* — degrees for the x tick labels (long group names),
+        anticlockwise as matplotlib counts: 45 tilts them "/" (rotated left, the usual
+        way), -45 tilts them "\\" (rotated right);
+      * *rename* — ``{"mutA": "mutant A"}``: the names shown for groups (axis, legend
+        and the statistics), the table unchanged;
       * *legend* — ``"inside"``, ``"outside"`` (right of the axes) or ``"none"``;
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
     """
     kind = kind.lower()
+    if rename and isinstance(table, DataTable):
+        table = _renamed(table, rename)
+        order = [rename.get(o, o) for o in order] if order else order
     if order and isinstance(table, DataTable):
         table = _reordered(table, order)
     if kind == "auto":
@@ -727,12 +737,39 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
             if not show_xlabel:
                 ax.set_xlabel("")
         fig.tight_layout()
+    if rename and not isinstance(table, DataTable):
+        # a grouped table: its factor levels as shown (ticks and legend)
+        for ax in fig.axes:
+            names = [t.get_text() for t in ax.get_xticklabels()]
+            ax.set_xticks(ax.get_xticks(), [str(rename.get(n, n)) for n in names])
+            for t in (ax.get_legend().get_texts() if ax.get_legend() else []):
+                if t.get_text() in rename:
+                    t.set_text(str(rename[t.get_text()]))
     _apply_layout(fig, width=width, height=height, font_scale=font_scale, ylim=ylim,
                   log_y=log_y, xtick_rotation=xtick_rotation, legend=legend)
     if kind == "grouped" and annotate and stats_record and "error" not in stats_record:
         # room for the ANOVA line under the axis labels (they ran into each other)
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
+        lines = getattr(fig, "_staplot_note_lines", 1)
+        fig.tight_layout(rect=(0, min(0.4, 0.012 + 0.026 * lines * 4 / max(fig.get_size_inches()[1], 1)), 1, 1))
     return fig, stats_record
+
+
+def _renamed(table, rename):
+    """A copy of *table* whose groups named in *rename* (case-insensitive) show the new
+    names; unknown names raise."""
+    import copy
+    by_name = {c.name.lower(): c for c in table.columns}
+    missing = [o for o in rename if str(o).lower() not in by_name]
+    if missing:
+        raise ValueError(f"no group named {missing}; groups: {[c.name for c in table.columns]}")
+    new = {str(k).lower(): str(v) for k, v in rename.items()}
+    out = copy.copy(table)
+    out.columns = []
+    for c in table.columns:
+        c2 = copy.copy(c)
+        c2.name = new.get(c.name.lower(), c.name)
+        out.columns.append(c2)
+    return out
 
 
 def _reordered(table, order):
@@ -776,8 +813,11 @@ def _apply_layout(fig, *, width=None, height=None, font_scale=None, ylim=None, l
             ax.set_ylim(cur_lo if lo is None else float(lo), cur_hi if hi is None else float(hi))
         if xtick_rotation is not None:
             for t in ax.get_xticklabels():
+                angle = float(xtick_rotation) % 180
                 t.set_rotation(float(xtick_rotation))
-                t.set_ha("right" if 0 < float(xtick_rotation) % 180 < 90 else "center")
+                # the end of the text at its tick: "/" ends on the right, "\\" on the left
+                t.set_ha("center" if angle in (0, 90) else "right" if angle < 90 else "left")
+                t.set_rotation_mode("anchor")
         if legend:
             if legend not in LEGEND_PLACES:
                 raise ValueError(f"legend must be one of {LEGEND_PLACES}")
@@ -804,7 +844,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               width: float | None = None, height: float | None = None,
               font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
               xtick_rotation: float | None = None, legend: str | None = None,
-              show_ylabel: bool = True, show_xlabel: bool = True) -> str:
+              show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -831,7 +871,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("order", list(order) if order else None, None),
                                  ("ylim", list(ylim) if ylim else None, None), ("log_y", log_y, False),
                                  ("xtick_rotation", xtick_rotation, None), ("legend", legend, None),
-                                 ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True)):
+                                 ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True),
+                                 ("rename", dict(rename) if rename else None, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     builder = "grouped_table_from_csv" if kind == "grouped" else "table_from_csv"

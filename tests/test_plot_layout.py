@@ -103,3 +103,18 @@ def test_auto_picks_the_plot_that_shows_the_data(tmp_path):
     assert "kind='violin'" in api.plot_code(str(many), "auto")
     with pytest.raises(ValueError, match="tidy table"):
         api.plot_code(str(tidy), "auto")
+
+
+def test_rename_groups_and_tilt_the_names_both_ways(csv):
+    """"rename mutA into mutant A"; "rotate x labels by 45 degrees left" (= anticlockwise,
+    rising "/"), then "the opposite direction"."""
+    t = api.table_from_csv(csv)
+    fig, rec = api.plot(t, "box", rename={"muta": "mutant A"}, xtick_rotation=45)
+    ticks = fig.axes[0].get_xticklabels()
+    assert [x.get_text() for x in ticks] == ["WT", "mutant A", "mutB"]
+    assert "mutant A" in {c["a"] for c in rec["comparisons"]} | {c["b"] for c in rec["comparisons"]}
+    assert ticks[0].get_rotation() == 45 and ticks[0].get_ha() == "right"      # "/" ends at its tick
+    ticks = api.plot(t, "box", xtick_rotation=-45)[0].axes[0].get_xticklabels()
+    assert ticks[0].get_rotation() == 315 and ticks[0].get_ha() == "left"      # "\" starts at its tick
+    with pytest.raises(ValueError, match="no group named"):
+        api.plot(t, "box", rename={"nope": "x"})
