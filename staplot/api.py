@@ -105,6 +105,69 @@ def _read_csv(path):
     return pd.read_csv(path, sep=sep, decimal=decimal, encoding="utf-8-sig")
 
 
+def _detect_layout(df, layout: str = "auto") -> str:
+    import pandas as pd
+    if layout != "auto":
+        return layout
+    first_numeric = pd.to_numeric(df.iloc[:, 0], errors="coerce").notna().mean()
+    return "long" if (df.shape[1] == 2 and first_numeric < 0.5) else "wide"
+
+
+def _has_label(value) -> bool:
+    import pandas as pd
+    return not pd.isna(value) and str(value).strip() != ""
+
+
+def csv_cleaning_report(path: str, layout: str = "auto") -> dict:
+    """What reading *path* for a plot keeps and leaves out, so it can be told to the
+    reader (or to a language model asked "what did you do with the empty cells?").
+
+    Returns ``{"layout", "groups": {group: {"used", "missing", "non_numeric",
+    "non_numeric_examples"}}, "rows_without_group", "summary"}``. *missing* counts empty
+    cells and NA / nan / n/a markers; *non_numeric* counts text that is not a number
+    (often a typo: "4O" for "40", "abc"). Both are left out of the plot and the
+    statistics, group by group; nothing is imputed. In a long table a row with no group
+    label is left out too (it is not a group of its own)."""
+    import pandas as pd
+    df = _read_csv(path)
+    out = {"layout": None, "groups": {}, "rows_without_group": 0, "summary": "empty table"}
+    if df.shape[1] == 0:
+        return out
+    layout = _detect_layout(df, layout)
+    out["layout"] = layout
+
+    def tally(raw):
+        missing = int(raw.isna().sum())
+        numeric = pd.to_numeric(raw, errors="coerce")
+        bad = raw[raw.notna() & numeric.isna()]
+        return {"used": int(numeric.notna().sum()), "missing": missing, "non_numeric": int(len(bad)),
+                "non_numeric_examples": [str(v) for v in bad.astype(str).unique()[:5]]}
+
+    if layout == "long":
+        gcol, vcol = df.columns[0], df.columns[1]
+        labelled = df[gcol].map(_has_label)
+        out["rows_without_group"] = int((~labelled).sum())
+        for g, sub in df[labelled].groupby(df[gcol][labelled].astype(str).str.strip(), sort=False):
+            out["groups"][str(g)] = tally(sub[vcol])
+    else:
+        for c in df.columns:
+            out["groups"][str(c)] = tally(df[c])
+    parts = []
+    for g, t in out["groups"].items():
+        left = []
+        if t["missing"]:
+            left.append(f"{t['missing']} empty/NA")
+        if t["non_numeric"]:
+            left.append(f"{t['non_numeric']} not a number ({', '.join(repr(x) for x in t['non_numeric_examples'])})")
+        parts.append(f"{g}: n={t['used']}" + (f" ({'; '.join(left)} left out)" if left else ""))
+    if out["rows_without_group"]:
+        parts.append(f"{out['rows_without_group']} row(s) without a group label left out")
+    total_left = sum(t["missing"] + t["non_numeric"] for t in out["groups"].values()) + out["rows_without_group"]
+    out["summary"] = ("; ".join(parts) + ("" if total_left else " — no value left out")
+                      + (". Left-out cells are skipped per group, never filled in." if total_left else "."))
+    return out
+
+
 def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> DataTable:
     """Build a column DataTable from a CSV.
 
@@ -120,16 +183,17 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> 
     if df.shape[1] == 0:
         return DataTable(nm)
 
-    if layout == "auto":
-        first_numeric = pd.to_numeric(df.iloc[:, 0], errors="coerce").notna().mean()
-        layout = "long" if (df.shape[1] == 2 and first_numeric < 0.5) else "wide"
+    layout = _detect_layout(df, layout)
 
     if layout == "long":
         gcol, vcol = df.columns[0], df.columns[1]
         vals = pd.to_numeric(df[vcol], errors="coerce")
         columns: dict = {}
-        for g, v in zip(df[gcol].astype(str), vals):
-            columns.setdefault(g, []).append(v)
+        for g, v in zip(df[gcol], vals):
+            # a row without a group label is not a group named "nan" (it was plotted as one)
+            if not _has_label(g):
+                continue
+            columns.setdefault(str(g).strip(), []).append(v)
         return table_from_columns(columns, name=nm)
 
     # wide
