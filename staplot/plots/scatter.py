@@ -23,14 +23,14 @@ def plot_scatter(
     col_names = list(groups.keys())
 
     if not col_names:
-        fig, ax = plt.subplots()
+        fig, ax = styles.subplots()
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return fig
 
     x_name = x_col or col_names[0]
     y_names = y_cols or col_names[1:] if len(col_names) > 1 else col_names
 
-    fig, ax = plt.subplots(figsize=(5, 4))
+    fig, ax = styles.subplots(figsize=(5, 4))
 
     for i, y_name in enumerate(y_names):
         if x_name not in groups or y_name not in groups:
@@ -60,5 +60,6 @@ def plot_scatter(
     ax.set_title(title or table.name)
     if len(y_names) > 1 or show_regression:
         ax.legend(fontsize=8)
-    fig.tight_layout()
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig

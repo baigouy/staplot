@@ -75,6 +75,7 @@ PLOT_ELEMENTS = {
     "axes": "the axes, ticks and their labels",
     "background": "the plot's background",
 }
+_PART_TAGS = set(PLOT_ELEMENTS) | {"bar", "box", "violin"}
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +823,7 @@ def correlation_test(table: DataTable, method: str = "pearson") -> dict:
     return rec
 
 
-def _annotate_two_way(fig, rec, names=None):
+def _annotate_two_way(fig, rec, names=None, ax=None):
     parts = []
     a, b = names if names else ("factor A", "factor B")
     shown = {"factor A": a, "factor B": b, "A x B": f"{a} × {b}"}
@@ -834,6 +835,12 @@ def _annotate_two_way(fig, rec, names=None):
     if parts:
         # one effect per line: on one line it was wider than the plot, and a panel sized
         # to it squeezed the bars (PyFigures, 2026-11-18)
+        if ax is not None:
+            # a facet: the note under its own axes
+            ax.annotate("Two-way ANOVA\n" + "\n".join(parts), xy=(0.5, 0), xycoords=ax.xaxis.label,
+                        xytext=(0, -3), textcoords="offset points", ha="center", va="top", fontsize=6,
+                        color="#444444", linespacing=1.2, annotation_clip=False)
+            return
         fig.text(0.5, 0.005, "Two-way ANOVA\n" + "\n".join(parts),
                  ha="center", va="bottom", fontsize=7, color="#444444", linespacing=1.25)
         fig._staplot_note_lines = len(parts) + 1
@@ -854,7 +861,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          xtick_rotation: float | None = None, legend: str | None = None,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
-         element_colors: dict | None = None):
+         element_colors: dict | None = None, ax=None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -902,7 +909,52 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
         lists them; the groups' fill colours are *colors*);
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
+    *ax*: draw into these axes (one facet, :func:`plot_facets`) instead of a new figure.
     """
+    if ax is not None:
+        with _plots.styles.drawing_into(ax):
+            return _untagged(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
+                             stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
+                             show_title=show_title, order=order, show_ylabel=show_ylabel,
+                             show_xlabel=show_xlabel, rename=rename, show_points=show_points,
+                             violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax))
+    return _untagged(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
+                     stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
+                     show_title=show_title, aspect=aspect, width=width, height=height,
+                     font_scale=font_scale, order=order, ylim=ylim, log_y=log_y,
+                     xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
+                     show_xlabel=show_xlabel, rename=rename, show_points=show_points,
+                     violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors))
+
+
+def plot_part(artist) -> str | None:
+    """The part of a staplot plot an artist draws ("points", "median", "brackets",
+    "edges"...: PLOT_ELEMENTS), or None."""
+    return getattr(artist, "_staplot_part", None) or (
+        artist.get_gid() if artist.get_gid() in _PART_TAGS else None)
+
+
+def _untagged(result):
+    """The plot with its parts named by a private attribute, not by their gid: a gid is
+    the element's id in an SVG, and many elements sharing one (every bracket) were drawn
+    once by a renderer that draws elements by id (PyFigures)."""
+    fig = result[0]
+    for artist in fig.findobj():
+        gid = artist.get_gid()
+        if gid in _PART_TAGS:
+            artist._staplot_part = gid
+            artist.set_gid(None)
+    return result
+
+
+def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
+              only_significant: bool = True, stats_mode: str = "auto", title: str = "",
+              ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = True,
+              aspect=None, width=None, height=None, font_scale=None, order=None, ylim=None,
+              log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
+              show_xlabel: bool = True, rename=None, show_points: bool = True,
+              violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
+              facet_ax=None):
     kind = kind.lower()
     # the y label the table gives (its value column: "area (um2)") when none is asked
     ylabel = ylabel or getattr(table, "value_name", "") or ""
@@ -964,13 +1016,13 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
             stats_record = two_way_test(table)
             stats_record["split_comparisons"] = pairs
             if "error" not in stats_record:
-                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None))
+                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
     elif kind == "grouped":
         fig = _plots.plot_grouped_bar(table, error_type=error, title=title,
                                       ylabel=ylabel, colors=colors)
         names = getattr(table, "factor_names", None)
         if names:
-            ax = fig.axes[0]
+            ax = facet_ax if facet_ax is not None else fig.axes[0]
             if ax.get_legend() is not None and ax.get_legend().get_title().get_text() in ("", "Group"):
                 ax.get_legend().set_title(names[0])          # what the colours are
             if xlabel or not ax.get_xlabel():
@@ -978,7 +1030,20 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
         if annotate:
             stats_record = two_way_test(table)
             if "error" not in stats_record:
-                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None))
+                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
+    if facet_ax is not None:
+        # one facet: the figure's size, layout and colours are set once, by plot_facets
+        if not show_ylabel:
+            facet_ax.set_ylabel("")
+        if not show_xlabel:
+            facet_ax.set_xlabel("")
+        if rename and not isinstance(table, DataTable):
+            names = [t.get_text() for t in facet_ax.get_xticklabels()]
+            facet_ax.set_xticks(facet_ax.get_xticks(), [str(rename.get(n, n)) for n in names])
+            for t in (facet_ax.get_legend().get_texts() if facet_ax.get_legend() else []):
+                if t.get_text() in rename:
+                    t.set_text(str(rename[t.get_text()]))
+        return fig, stats_record
     if not show_title and not title:
         for ax in fig.axes:
             ax.set_title("")
@@ -1016,6 +1081,159 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     return fig, stats_record
 
 
+def facet_levels(path: str, facet: str, where=None, skip_rows=None) -> tuple[str, list]:
+    """(the facet column's name as in the table, its levels in order: numbers sorted,
+    text in the order of the table)."""
+    import pandas as pd
+    df = select_columns(read_table(path, skip_rows), None, where)
+    low = {str(c).strip().lower(): c for c in df.columns}
+    col = low.get(str(facet).strip().lower())
+    if col is None:
+        raise ValueError(f"no column {facet!r} to facet by; the columns are {', '.join(map(str, df.columns))}")
+    values = df[col].dropna()
+    if pd.api.types.is_numeric_dtype(values):
+        levels = sorted(values.unique().tolist())
+    else:
+        levels = list(dict.fromkeys(values.astype(str).str.strip()))
+    if len(levels) > 24:
+        raise ValueError(f"{col} has {len(levels)} values: too many facets (24 at most)")
+    return str(col), levels
+
+
+def facet_tables(path: str, kind: str, facet: str, facet_row: str | None = None, *, columns=None,
+                 where=None, skip_rows=None):
+    """[(label, table or None, error)] of a faceted plot: one table per value of *facet*
+    (and of *facet_row*), "day = 7" ..."""
+    col, levels = facet_levels(path, facet, where, skip_rows)
+    row_col, row_levels = (facet_levels(path, facet_row, where, skip_rows) if facet_row else (None, [None]))
+    two = kind in ("grouped", "split_violin")
+    if columns is None:
+        columns = [str(c) for c in read_table(path, skip_rows).columns if str(c) not in (col, row_col)]
+    out = []
+    for r_level in row_levels:
+        for level in levels:
+            parts = [f"({where})"] if where else []
+            parts.append(f"`{col}` == {level!r}")
+            if facet_row:
+                parts.append(f"`{row_col}` == {r_level!r}")
+            sub = " and ".join(parts)
+            label = f"{col} = {level}" + (f" | {row_col} = {r_level}" if facet_row else "")
+            try:
+                table = (grouped_table_from_csv(path, columns=columns, where=sub, skip_rows=skip_rows) if two
+                         else table_from_csv(path, columns=columns, where=sub, skip_rows=skip_rows))
+                out.append((label, table, ""))
+            except ValueError as e:
+                out.append((label, None, str(e)))
+    return out
+
+
+def facet_stats(path: str, kind: str, facet: str, facet_row: str | None = None, *, columns=None,
+                where=None, skip_rows=None, only_significant: bool = True, stats_mode: str = "auto") -> dict:
+    """{facet label: the statistics of that facet} (the tests plot_facets draws)."""
+    parametric = _STATS_MODE.get(stats_mode)
+    out = {}
+    for label, table, err in facet_tables(path, kind, facet, facet_row, columns=columns, where=where,
+                                          skip_rows=skip_rows):
+        if table is None:
+            out[label] = {"error": err}
+        elif kind in ("bar", "box", "violin"):
+            out[label] = auto_test(table, only_significant=only_significant, parametric=parametric)
+        elif kind in ("grouped", "split_violin"):
+            rec = two_way_test(table)
+            if kind == "split_violin" and "error" not in rec:
+                try:
+                    rec["split_comparisons"] = split_pair_tests(*split_parts(table), parametric=parametric)
+                except ValueError as e:
+                    rec["split_error"] = str(e)
+            out[label] = rec
+        elif kind == "scatter":
+            out[label] = correlation_test(table)
+    return out
+
+
+@_plots.styles.styled
+def plot_facets(path: str, kind: str = "box", facet: str = "", *, columns=None, where=None,
+                skip_rows=None, ncols: int | None = None, sharey: bool = True,
+                facet_row: str | None = None, **kwargs):
+    """One plot per value of the *facet* column (as ggplot2's facet_wrap), side by side,
+    each with its own statistics: e.g. box plots of area per genotype, one facet per
+    day: ``plot_facets("cells.csv", "box", "day", columns=["genotype", "area"])``.
+    *facet_row*: a second column, one row of facets per value (facet_grid).
+    *columns*, *where*, *skip_rows*: as for :func:`table_from_csv` (the columns of the
+    plot itself, without the facet column). *ncols*: facets per row (default: up to 4).
+    *sharey*: the same y axis for every facet. Other keywords go to :func:`plot`
+    (kind, error, colors, violin_inner, element_colors, width / height of the whole
+    figure...). Returns ``(fig, {"facets": {level: stats_record}})``."""
+    import matplotlib.pyplot as plt
+    kind = kind.lower()
+    col, levels = facet_levels(path, facet, where, skip_rows)
+    row_col, row_levels = (facet_levels(path, facet_row, where, skip_rows) if facet_row else (None, [None]))
+    if columns is None:
+        columns = [str(c) for c in read_table(path, skip_rows).columns if str(c) not in (col, row_col)]
+    if kind == "auto":
+        kind = suggest_kind(path, columns=columns, where=where, skip_rows=skip_rows)["kind"] or "box"
+    n = len(levels)
+    nc = n if facet_row else min(n, int(ncols) if ncols else 4)
+    nr = len(row_levels) if facet_row else -(-n // nc)
+    per_w = 2.2 if kind in ("bar", "box", "violin") else 3.0
+    # own y axes while drawing (each facet's brackets need their room), one range after
+    fig, axes = plt.subplots(nr, nc, figsize=(per_w * nc + 0.6, 3.0 * nr + 0.4), squeeze=False)
+    layout_keys = ("aspect", "width", "height", "font_scale", "ylim", "log_y", "xtick_rotation", "legend",
+                   "element_colors")
+    layout = {k: kwargs.pop(k) for k in layout_keys if k in kwargs}
+    title = kwargs.pop("title", "")          # over the whole figure; each facet shows its value
+    kwargs.pop("show_title", None)
+    records = {}
+    cells = facet_tables(path, kind, facet, facet_row, columns=columns, where=where, skip_rows=skip_rows)
+    for i, (label, table, err) in enumerate(cells):
+        ax = axes.flat[i]
+        rec = {"error": err}
+        if table is not None:
+            try:
+                _f, rec = plot(table, kind, ax=ax, **kwargs)
+            except ValueError as e:
+                table, rec = None, {"error": str(e)}
+        if table is None:
+            ax.text(0.5, 0.5, f"no data\n({rec['error'][:60]})", ha="center", va="center", fontsize=7,
+                    transform=ax.transAxes)
+        ax.set_title(label, fontsize=9)
+        records[label] = rec
+    for ax in list(axes.flat)[len(cells):]:
+        ax.set_visible(False)
+    shown = [a for a in axes.flat if a.get_visible()]
+    if sharey and shown:
+        lo = min(a.get_ylim()[0] for a in shown)
+        hi = max(a.get_ylim()[1] for a in shown)
+        for a in shown:
+            a.set_ylim(lo, hi)
+            if a not in axes[:, 0]:
+                a.set_ylabel("")
+                a.tick_params(labelleft=False)
+    # one legend for the figure, above the facets (on the first one it covered its title)
+    top = 1.0
+    first = next((a for a in shown if a.get_legend() is not None), None)
+    if first is not None:
+        handles, labels = first.get_legend_handles_labels()
+        title = first.get_legend().get_title().get_text()
+        for a in shown:
+            if a.get_legend() is not None:
+                a.get_legend().remove()
+        fig.legend(handles, labels, title=title or None, loc="upper center", ncol=max(1, len(labels)),
+                   frameon=False, fontsize=8, title_fontsize=8, bbox_to_anchor=(0.5, 1.0))
+        top = 1 - 0.55 / fig.get_size_inches()[1]
+    if layout.get("aspect"):
+        w, h = fig.get_size_inches()
+        fig.set_size_inches(max(0.5, float(layout.pop("aspect")) * h), h)
+    _apply_layout(fig, **{k: v for k, v in layout.items() if k != "element_colors"})
+    if layout.get("element_colors"):
+        apply_element_colors(fig, layout["element_colors"])
+    if title:
+        fig.suptitle(title)
+        top = min(top, 1 - 0.35 / fig.get_size_inches()[1])
+    fig.tight_layout(rect=(0, 0, 1, top))
+    return fig, {"facets": records, "facet": col, "facet_row": row_col}
+
+
 def apply_element_colors(fig, element_colors: dict) -> None:
     """Colour parts of a plot drawn by staplot: {"points": "black", "median": "red",
     "edges": "none", ...} (PLOT_ELEMENTS); an unknown part raises."""
@@ -1032,7 +1250,7 @@ def apply_element_colors(fig, element_colors: dict) -> None:
     edge_gids = {"bar", "box", "violin"}
     for ax in fig.axes:
         for artist in ax.findobj():
-            gid = artist.get_gid()
+            gid = plot_part(artist)
             if not gid:
                 continue
             if gid in edge_gids and "edges" in colors:
@@ -1200,7 +1418,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               xtick_rotation: float | None = None, legend: str | None = None,
               show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
               show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
-              columns=None, where=None, skip_rows=None, element_colors: dict | None = None) -> str:
+              columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
+              facet: str | None = None, facet_row: str | None = None, ncols: int | None = None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1234,6 +1453,26 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("element_colors", dict(element_colors) if element_colors else None, None)):
         if value != default:
             args.append(f"{name}={value!r}")
+    if facet:
+        # a faceted plot: one plot per value of the facet column, each with its statistics
+        fargs = [f"kind={kind!r}", f"facet={facet!r}"] + args[1:]
+        for name, value in (("facet_row", facet_row), ("ncols", ncols),
+                            ("columns", list(columns) if columns else None), ("where", where),
+                            ("skip_rows", None if skip_rows in (None, "auto") else int(skip_rows))):
+            if value is not None:
+                fargs.append(f"{name}={value!r}")
+        return "\n".join([
+            f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
+            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
+            "# One plot per value of " + repr(facet) + (f" and of {facet_row!r}" if facet_row else "")
+            + "; each facet's statistics are in stats_record['facets'].",
+            "from staplot import api",
+            "",
+            f"fig, stats_record = api.plot_facets(r{str(path)!r}, " + ", ".join(fargs) + ")",
+            'fig.savefig("plot.pdf")             # vector; or .png / .svg',
+            "for facet, rec in stats_record['facets'].items():",
+            "    print(facet, rec.get('test'), [(c['a'], c['b'], c['p']) for c in rec.get('comparisons') or []])",
+            ""])
     builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin") else "table_from_csv"
     out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",

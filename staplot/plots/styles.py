@@ -122,6 +122,37 @@ def context(preset: str | None = None):
     return mpl.rc_context(rc(preset))
 
 
+_TARGET_AXES = []          # set by drawing_into(ax): the plotters draw there (facets)
+
+
+class drawing_into:
+    """``with drawing_into(ax):`` the plotters draw into *ax* instead of a new figure
+    (one facet of a faceted plot)."""
+
+    def __init__(self, ax):
+        self.ax = ax
+
+    def __enter__(self):
+        _TARGET_AXES.append(self.ax)
+        return self.ax
+
+    def __exit__(self, *exc):
+        _TARGET_AXES.pop()
+
+
+def subplots(**kwargs):
+    """``plt.subplots()``, or the axes set by :class:`drawing_into`."""
+    if _TARGET_AXES:
+        ax = _TARGET_AXES[-1]
+        return ax.figure, ax
+    import matplotlib.pyplot as plt
+    return plt.subplots(**kwargs)
+
+
+def target_axes():
+    return _TARGET_AXES[-1] if _TARGET_AXES else None
+
+
 def styled(func):
     """Decorator: build the plot inside the current preset's :func:`context`."""
     @functools.wraps(func)

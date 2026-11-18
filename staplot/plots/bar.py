@@ -22,11 +22,11 @@ def plot_bar(
     cols = table.columns
     names = [c.name for c in cols]
     if not names:
-        fig, ax = plt.subplots()
+        fig, ax = styles.subplots()
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return fig
 
-    fig, ax = plt.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
+    fig, ax = styles.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
     x_pos = np.arange(len(names))
     bar_width = 0.6
 
@@ -104,5 +104,6 @@ def plot_bar(
                 bar_tops[col.name] = d["mean"] + (err if not np.isnan(err) else 0)
         add_significance_brackets(ax, names, sig_pairs, bar_tops)
 
-    fig.tight_layout()
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig

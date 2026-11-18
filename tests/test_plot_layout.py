@@ -221,11 +221,11 @@ def test_colour_parts_of_a_plot(csv, tidy):
     fig = api.plot(t, "box", element_colors={"points": "black", "median": "red", "brackets": "#888888",
                                               "edges": "none"})[0]
     ax = fig.axes[0]
-    pts = [a for a in ax.findobj() if a.get_gid() == "points"]
+    pts = [a for a in ax.findobj() if api.plot_part(a) == "points"]
     assert pts and all(tuple(p.get_facecolor()[0])[:3] == to_rgba("black")[:3] for p in pts)
-    meds = [a for a in ax.findobj() if a.get_gid() == "median"]
+    meds = [a for a in ax.findobj() if api.plot_part(a) == "median"]
     assert len(meds) == 3 and all(to_rgba(m.get_color()) == to_rgba("red") for m in meds)
-    brackets = [a for a in ax.findobj() if a.get_gid() == "brackets"]
+    brackets = [a for a in ax.findobj() if api.plot_part(a) == "brackets"]
     assert brackets and all(to_rgba(b.get_color()) == to_rgba("#888888") for b in brackets)
     for kind in ("bar", "violin"):
         api.plot(t, kind, element_colors={"points": "blue", "edges": "black", "error_bars": "red",
@@ -249,3 +249,24 @@ def test_axis_labels_come_from_the_table(tidy):
     ax = api.plot(gt, "grouped")[0].axes[0]
     assert (ax.get_ylabel(), ax.get_xlabel(), ax.get_legend().get_title().get_text()) == ("area", "sex", "genotype")
     assert api.plot(gt, "grouped", ylabel="Area (µm²)")[0].axes[0].get_ylabel() == "Area (µm²)"
+
+
+def test_facets_one_plot_per_value_each_with_its_statistics(tidy):
+    """"split plots / facets": box plots of area per genotype, one facet per treatment."""
+    fig, rec = api.plot_facets(tidy, "box", "treatment", columns=["genotype", "area"])
+    shown = [a for a in fig.axes if a.get_visible()]
+    assert [a.get_title() for a in shown] == ["treatment = ctrl", "treatment = drug"]
+    assert set(rec["facets"]) == {"treatment = ctrl", "treatment = drug"}
+    assert all("test" in r for r in rec["facets"].values())
+    assert shown[0].get_ylim() == shown[1].get_ylim()               # one y range
+    # facet_grid, split violins with one legend for the figure
+    fig, rec = api.plot_facets(tidy, "split_violin", "treatment", columns=["genotype", "sex", "area"])
+    assert len(fig.legends) == 1 and not any(a.get_legend() for a in fig.axes)
+    fig, rec = api.plot_facets(tidy, "violin", "treatment", facet_row="sex", columns=["genotype", "area"],
+                               element_colors={"points": "black"}, sharey=False)
+    assert len(rec["facets"]) == 4 and "treatment = drug | sex = male" in rec["facets"]
+    with pytest.raises(ValueError, match="no column"):
+        api.plot_facets(tidy, "box", "age", columns=["genotype", "area"])
+    code = api.plot_code(tidy, "box", facet="treatment", columns=["genotype", "area"])
+    assert "api.plot_facets(" in code and "facet='treatment'" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})

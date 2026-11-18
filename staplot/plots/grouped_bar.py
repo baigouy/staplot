@@ -26,7 +26,7 @@ def plot_grouped_bar(
     """
 
     if not table.col_groups or not table.row_labels:
-        fig, ax = plt.subplots()
+        fig, ax = styles.subplots()
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
                 transform=ax.transAxes)
         return fig
@@ -38,7 +38,7 @@ def plot_grouped_bar(
     x_base = np.arange(n_rows)
 
     fig_w = max(5, n_rows * n_cg * 0.55 + 1.5)
-    fig, ax = plt.subplots(figsize=(fig_w, 4))
+    fig, ax = styles.subplots(figsize=(fig_w, 4))
 
     rng = np.random.default_rng(42)
 
@@ -111,5 +111,6 @@ def plot_grouped_bar(
     # beside the axes: inside, "upper right" covered the tallest bars
     ax.legend(title="Group", fontsize=8, loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
     ax.set_xlim(-0.5, n_rows - 0.5)
-    fig.tight_layout()
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig

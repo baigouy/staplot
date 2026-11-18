@@ -78,11 +78,11 @@ def plot_box(
     arrays = [c.valid_values() for c in cols]
 
     if not names:
-        fig, ax = plt.subplots()
+        fig, ax = styles.subplots()
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return fig
 
-    fig, ax = plt.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
+    fig, ax = styles.subplots(figsize=(max(3.5, len(names) * 0.9), 4))
     palette = [
         (colors[i] if colors and i < len(colors) else styles.color(i))
         for i in range(len(names))
@@ -157,7 +157,8 @@ def plot_box(
                 box_tops[name] = max(box_tops[name], violin_tops[name])
         add_significance_brackets(ax, names, sig_pairs, box_tops)
 
-    fig.tight_layout()
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig
 
 
@@ -180,7 +181,7 @@ def plot_split_violin(
     legend naming the halves. *arrays*[(x_level, half)] = the values. *pair_p*:
     {x_level: p} of the two halves' comparison, drawn as a short bracket with stars."""
     from ..stats.descriptive import significance_stars
-    fig, ax = plt.subplots(figsize=(max(3.5, len(x_levels) * 1.0 + 1.0), 4))
+    fig, ax = styles.subplots(figsize=(max(3.5, len(x_levels) * 1.0 + 1.0), 4))
     palette = [(colors[i] if colors and i < len(colors) else styles.color(i)) for i in range(2)]
     tops = {}
     rng = np.random.default_rng(42)
@@ -229,5 +230,6 @@ def plot_split_violin(
             new_top = max(new_top, y + 0.1 * rng_y)
         if new_top > y_hi:
             ax.set_ylim(top=new_top)
-    fig.tight_layout()
+    if styles.target_axes() is None:
+        fig.tight_layout()
     return fig
