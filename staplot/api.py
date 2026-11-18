@@ -290,6 +290,7 @@ def read_table(path: str, skip_rows=None):
         skip, sep, decimal = _text_preamble(head, skip_rows)
         df = pd.read_csv(file, sep=sep, decimal=decimal, encoding="utf-8-sig", skiprows=skip,
                          comment=None)
+        df = _units_row(df)
         # one typo ("abc") in a decimal-comma column keeps the whole column as text,
         # and pandas then leaves its "41,2" unconverted: the group vanished
         df = _numbers_from_text(df, decimal_comma=(decimal == ","))
@@ -331,10 +332,45 @@ def read_table(path: str, skip_rows=None):
               for i, v in enumerate(raw.iloc[0])]
     df = raw.iloc[1:].reset_index(drop=True)
     df.columns = header
+    df = _units_row(df)
     # Excel cells typed as text ("12", "3,5") are numbers to a CSV reader too
     df = _numbers_from_text(df, decimal_comma=True)
     df.attrs["skipped_lines"] = skipped
     return df
+
+
+def _units_row(df):
+    """*df* with a row of units under the header ("µm", "a.u.", "(s)") merged into the
+    column names ("length (µm)"), or as it is. A units row: every filled cell is short
+    text, and the columns below it are numbers."""
+    import pandas as pd
+    if len(df) < 3:
+        return df
+    first = df.iloc[0]
+    filled = [v for v in first if not (v is None or (isinstance(v, float) and v != v) or str(v).strip() == "")]
+    if not filled or any(pd.notna(pd.to_numeric(str(v).replace(",", "."), errors="coerce")) for v in filled):
+        return df
+    if any(len(str(v).strip()) > 15 for v in filled):
+        return df
+    below = df.iloc[1:]
+    numeric = [c for c in df.columns
+               if pd.to_numeric(below[c].astype(str).str.replace(",", ".", regex=False), errors="coerce").notna().mean() >= 0.8]
+    unit_cols = [c for c in df.columns if str(first[c]).strip() not in ("", "nan", "None")]
+    if not numeric or not set(unit_cols) <= set(numeric):
+        return df                                    # text under a text column: data, not a unit
+    names = []
+    for c in df.columns:
+        u = str(first[c]).strip()
+        if u in ("", "nan", "None"):
+            names.append(c)
+        else:
+            u = u if u[:1] in "([" else f"({u})"
+            names.append(f"{c} {u}")
+    out = below.reset_index(drop=True)
+    out.columns = names
+    out.attrs = dict(df.attrs)
+    out.attrs["units_row"] = [str(first[c]).strip() for c in df.columns]
+    return out
 
 
 def _numbers_from_text(df, decimal_comma: bool):

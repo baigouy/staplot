@@ -62,3 +62,21 @@ def test_plain_tables_are_read_as_before(tmp_path):
     path.write_text("group,value\nA,1\nA,2\nB,3\nB,4\n", encoding="utf-8")
     df = api.read_table(str(path))
     assert list(df.columns) == ["group", "value"] and len(df) == 4 and not df.attrs["skipped_lines"]
+
+
+def test_a_row_of_units_goes_into_the_column_names(tmp_path):
+    """Sheets often hold the units under the header: they name the axes ("area (µm²)")."""
+    path = tmp_path / "units.csv"
+    path.write_text("WT,mutA\nµm²,µm²\n10.5,12.1\n11.2,13.0\n9.8,12.6\n", encoding="utf-8")
+    df = api.read_table(str(path))
+    assert list(df.columns) == ["WT (µm²)", "mutA (µm²)"] and len(df) == 3
+    long = tmp_path / "long.csv"
+    long.write_text("genotype,area\n,(µm²)\nWT,10\nWT,11\nmut,13\nmut,14\n", encoding="utf-8")
+    t = api.table_from_csv(str(long))
+    assert t.value_name == "area (µm²)"
+    fig = api.plot(t, "box")[0]
+    assert fig.axes[0].get_ylabel() == "area (µm²)"
+    # a first row of data is not a units row
+    data = tmp_path / "data.csv"
+    data.write_text("genotype,area\nWT,10\nWT,11\nmut,13\n", encoding="utf-8")
+    assert list(api.read_table(str(data)).columns) == ["genotype", "area"]
