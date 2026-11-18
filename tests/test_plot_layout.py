@@ -333,3 +333,19 @@ def test_compare_every_group_with_a_control(csv):
     code = api.plot_code(csv, "box", control="WT")
     assert "stats.dunnett(" in code
     exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_swarm_points_never_overlap(tidy):
+    t = api.table_from_csv(tidy, columns=["genotype", "area"])
+    fig = api.plot(t, "box", point_style="swarm", annotate=False)[0]
+    ax = fig.axes[0]
+    pts = [c for c in ax.collections if api.plot_part(c) == "points"]
+    xy = ax.transData.transform(pts[0].get_offsets())
+    d = float(np.sqrt(pts[0].get_sizes()[0])) * fig.dpi / 72
+    gaps = [np.hypot(*(xy[i] - xy[j])) for i in range(len(xy)) for j in range(i + 1, len(xy))]
+    assert min(gaps) >= d * 0.95                      # no two points on each other
+    line = api.plot(t, "box", point_style="line", annotate=False)[0].axes[0]
+    xs = [c for c in line.collections if api.plot_part(c) == "points"][0].get_offsets()[:, 0]
+    assert np.ptp(xs) < 1e-9
+    with pytest.raises(ValueError, match="point_style"):
+        api.plot(t, "box", point_style="dots")

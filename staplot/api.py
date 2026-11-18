@@ -952,7 +952,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
-         p_format: str = "stars", hlines=None, control: str | None = None):
+         p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter"):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -1008,8 +1008,11 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     "grey", "style": "--"}]``.
     *control*: compare every group with this one only (Dunnett's test, or Mann-Whitney
     against it): bar, box, violin.
+    *point_style*: "jitter" (default: spread at random), "swarm" (side by side, never
+    overlapping: a beeswarm) or "line" (in one column).
     """
-    extras = {"show_n": show_n, "show_mean": show_mean, "p_format": p_format, "hlines": hlines}
+    extras = {"show_n": show_n, "show_mean": show_mean, "p_format": p_format, "hlines": hlines,
+              "point_style": point_style}
     if ax is not None:
         with _plots.styles.drawing_into(ax):
             return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
@@ -1033,14 +1036,66 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
 P_FORMATS = ("stars", "p")
 
 
+POINT_STYLES = ("jitter", "swarm", "line")
+
+
+def swarm_offsets(y_px, diameter_px: float, max_dx_px: float) -> np.ndarray:
+    """x offsets (pixels) placing points at heights *y_px* (pixels) side by side without
+    overlap (a beeswarm): each point, from the lowest, takes the free place nearest the
+    centre, at most *max_dx_px* away (beyond, points may overlap)."""
+    ys = np.asarray(y_px, float)
+    out = np.zeros(len(ys))
+    if len(ys) < 2 or diameter_px <= 0:
+        return out
+    step = diameter_px * 0.55
+    placed_x: list[float] = []
+    placed_y: list[float] = []
+    for i in np.argsort(ys):
+        y = ys[i]
+        near = [(px, py) for px, py in zip(placed_x, placed_y) if abs(y - py) < diameter_px]
+        k = 0
+        while True:
+            dx = (k + 1) // 2 * step * (1 if k % 2 else -1)
+            if all((dx - px) ** 2 + (y - py) ** 2 >= diameter_px ** 2 for px, py in near):
+                break
+            k += 1
+            if abs(dx) > max_dx_px:
+                dx = float(np.clip(dx, -max_dx_px, max_dx_px))
+                break
+        placed_x.append(dx)
+        placed_y.append(y)
+        out[i] = dx
+    return out
+
+
 def _details(result, table, kind, ax=None, element_colors=None, *, show_n=False, show_mean=False,
-             p_format="stars", hlines=None):
+             p_format="stars", hlines=None, point_style="jitter"):
     """The journal details of a drawn plot: n under the group names, mean markers,
     p-values written out, reference lines."""
     fig, rec = result
     if p_format not in P_FORMATS:
         raise ValueError("p_format must be 'stars' or 'p' (the p-value itself)")
+    if point_style not in POINT_STYLES:
+        raise ValueError("point_style must be 'jitter', 'swarm' or 'line'")
     axes = [ax] if ax is not None else fig.axes[:1]
+    if point_style != "jitter" and kind in ("bar", "box", "violin", "split_violin"):
+        for a in axes:
+            # in display pixels: the points' size against the axes' scale
+            x0, x1 = a.get_xlim()
+            y0, y1 = a.get_ylim()
+            px_x = a.bbox.width / max(abs(x1 - x0), 1e-9)
+            px_y = a.bbox.height / max(abs(y1 - y0), 1e-9)
+            for pc in [c for c in a.collections if plot_part(c) == "points"]:
+                xy = pc.get_offsets()
+                if len(xy) < 2:
+                    continue
+                centre = float(np.mean(xy[:, 0]))
+                sizes = pc.get_sizes()
+                diameter = float(np.sqrt(sizes[0] if len(sizes) else 18.0)) * fig.dpi / 72.0
+                half = 0.18 if kind == "split_violin" else 0.38
+                dx = (swarm_offsets(xy[:, 1] * px_y, diameter, half * px_x) / px_x
+                      if point_style == "swarm" else np.zeros(len(xy)))
+                pc.set_offsets(np.column_stack([centre + dx, xy[:, 1]]))
     groups = table.group_arrays() if isinstance(table, DataTable) else None
     for a in axes:
         if show_n and groups and kind in ("bar", "box", "violin", "paired"):
@@ -1601,7 +1656,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
               show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
-              control: str | None = None) -> str:
+              control: str | None = None, point_style: str = "jitter") -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1635,7 +1690,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("element_colors", dict(element_colors) if element_colors else None, None),
                                  ("show_n", show_n, False), ("show_mean", show_mean, False),
                                  ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None),
-                                 ("control", control, None)):
+                                 ("control", control, None), ("point_style", point_style, "jitter")):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
