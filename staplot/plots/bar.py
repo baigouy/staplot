@@ -49,8 +49,9 @@ def plot_bar(
             zorder=2,
             linewidth=0.8,
             edgecolor="#444444",
+            gid="bar",
         )
-        ax.errorbar(
+        eb = ax.errorbar(
             x_pos[i],
             d["mean"],
             yerr=err,
@@ -60,6 +61,8 @@ def plot_bar(
             capsize=5,
             zorder=3,
         )
+        for part in eb.get_children():
+            part.set_gid("error_bars")
 
         if show_points and d["n"] > 0:
             vals, row_idxs = col.valid_values_with_indices()
@@ -74,6 +77,7 @@ def plot_bar(
                 linewidths=0.4,
                 edgecolors="white",
                 picker=5,
+                gid="points",
             )
             sc._staplot_meta = {"column": col.name, "rows": row_idxs, "exclude_all": False}
 

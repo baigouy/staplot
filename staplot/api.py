@@ -60,6 +60,21 @@ __all__ = [
 
 PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin")
 VIOLIN_SIDES = ("both", "left", "right")
+# the parts of a plot whose colour can be set (element_colors); the groups' own colours
+# are *colors*
+PLOT_ELEMENTS = {
+    "points": "the individual points",
+    "edges": "the outlines of the bars, boxes and violins",
+    "median": "the median line (box) or dot / line (violin)",
+    "whiskers": "the box plot whiskers and caps",
+    "outliers": "the box plot outliers",
+    "error_bars": "the error bars (bar, grouped)",
+    "inner": "the marks inside a violin (lines or mini box)",
+    "brackets": "the significance brackets and their stars",
+    "fit": "the regression line (scatter)",
+    "axes": "the axes, ticks and their labels",
+    "background": "the plot's background",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -194,11 +209,66 @@ def list_sheets(path: str) -> list[str]:
         return [str(s) for s in book.sheet_names]
 
 
-def read_table(path: str):
+def _text_preamble(text: str, skip_rows=None) -> tuple[int, str, str]:
+    """(lines to skip before the header, separator, decimal mark) of a text table. An
+    instrument or a script often writes lines above the table ("Plate reader export",
+    "Date: ...", "# comment"): they are skipped when they do not look like the table
+    (another number of separators than the header and the rows below it). *skip_rows*:
+    that many lines skipped, as the user says."""
+    lines = text.splitlines()
+    if skip_rows not in (None, "auto"):
+        skip = max(0, int(skip_rows))
+        body = "\n".join(lines[skip:skip + 40]) + "\n"
+        sep, decimal = csv_format(body)
+        return skip, sep, decimal
+    # the separator from the bulk of the table (not its preamble)
+    tail = [ln for ln in lines[len(lines) // 3:] if ln.strip()][:40] or lines
+    sep, decimal = csv_format("\n".join(tail) + "\n")
+    import csv as _csv
+
+    def fields(ln):
+        # quoted cells may hold the separator ("1,234")
+        try:
+            return len(next(_csv.reader([ln], delimiter=sep))) - 1
+        except (StopIteration, _csv.Error):
+            return ln.count(sep)
+    counts = [fields(ln) if ln.strip() and not ln.lstrip().startswith("#") else -1 for ln in lines]
+    seen = [c for c in counts if c > 0]
+    if not seen:
+        return 0, sep, decimal
+    modal = max(set(seen), key=seen.count)
+    skip = 0
+    for i, c in enumerate(counts):
+        if c == modal and (i + 1 >= len(counts) or counts[i + 1] in (modal, -1)):
+            skip = i
+            break
+    return skip, sep, decimal
+
+
+def preamble_note(path: str) -> str | None:
+    """What reading *path* skipped above its table ("the first 3 lines: 'Plate reader
+    export', ..."), or None."""
+    file, _sheet = split_sheet(path)
+    try:
+        df = read_table(path)
+    except Exception:
+        return None
+    lines = df.attrs.get("skipped_lines") or []
+    if not lines:
+        return None
+    shown = ", ".join(repr(str(t)[:40]) for t in lines[:3]) + (", ..." if len(lines) > 3 else "")
+    return (f"the first {len(lines)} line(s) above the table were skipped ({shown}); "
+            f"skip_rows=0 reads them")
+
+
+def read_table(path: str, skip_rows=None):
     """A table as a DataFrame: CSV / TSV / TXT (separator and decimal mark detected)
     or an Excel sheet (.xlsx, .xlsm, .xls; "book.xlsx::Sheet2" picks a sheet, by name
     or number from 1; the first one otherwise). Rows and columns left wholly empty in
-    the sheet are dropped (a sheet often has a blank margin)."""
+    the sheet are dropped (a sheet often has a blank margin). Lines above the table
+    (an instrument's header, a title, notes) are skipped when they do not look like
+    the table; *skip_rows* = that many lines (text) or rows (Excel) skipped instead,
+    0 = none. The skipped lines are in ``df.attrs["skipped_lines"]``."""
     import pandas as pd
     file, sheet = split_sheet(path)
     if is_sqlite(file):
@@ -212,11 +282,16 @@ def read_table(path: str):
         return _numbers_from_text(df, decimal_comma=False)
     if not is_excel(file):
         with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
-            sep, decimal = csv_format(f.read(4096))
-        df = pd.read_csv(file, sep=sep, decimal=decimal, encoding="utf-8-sig")
+            head = "".join(line for _i, line in zip(range(400), f))
+        skip, sep, decimal = _text_preamble(head, skip_rows)
+        df = pd.read_csv(file, sep=sep, decimal=decimal, encoding="utf-8-sig", skiprows=skip,
+                         comment=None)
         # one typo ("abc") in a decimal-comma column keeps the whole column as text,
         # and pandas then leaves its "41,2" unconverted: the group vanished
-        return _numbers_from_text(df, decimal_comma=(decimal == ","))
+        df = _numbers_from_text(df, decimal_comma=(decimal == ","))
+        df.attrs["skipped_lines"] = [ln for ln in head.splitlines()[:skip] if ln.strip()]
+        df.attrs["skip_rows"] = skip
+        return df
     engine = _excel_engine(file)
     with pd.ExcelFile(file, engine=engine) as book:
         names = [str(s) for s in book.sheet_names]
@@ -230,15 +305,32 @@ def read_table(path: str):
             raise ValueError(f"no sheet {sheet!r} in {os.path.basename(file)}; "
                              f"its sheets are {', '.join(names)}")
         raw = book.parse(chosen, header=None)
+    skipped = []
+    if skip_rows not in (None, "auto"):
+        skipped = [" ".join(str(v) for v in r if v == v) for r in raw.iloc[:int(skip_rows)].values.tolist()]
+        raw = raw.iloc[int(skip_rows):]
     raw = raw.dropna(how="all").dropna(axis=1, how="all")
     if raw.empty:
         return pd.DataFrame()
+    if skip_rows in (None, "auto") and len(raw) > 2:
+        # a title or notes above the table ("Experiment 12", "operator: XX"): rows with
+        # far fewer cells than the table's header and rows
+        filled = raw.notna().sum(axis=1).tolist()
+        width = max(set(filled), key=filled.count)
+        top = 0
+        while top < len(filled) - 1 and filled[top] < max(2, 0.6 * width):
+            top += 1
+        if top:
+            skipped = [" ".join(str(v) for v in r if v == v) for r in raw.iloc[:top].values.tolist()]
+            raw = raw.iloc[top:].dropna(axis=1, how="all")
     header = [str(v).strip() if not (isinstance(v, float) and v != v) else f"column {i + 1}"
               for i, v in enumerate(raw.iloc[0])]
     df = raw.iloc[1:].reset_index(drop=True)
     df.columns = header
     # Excel cells typed as text ("12", "3,5") are numbers to a CSV reader too
-    return _numbers_from_text(df, decimal_comma=True)
+    df = _numbers_from_text(df, decimal_comma=True)
+    df.attrs["skipped_lines"] = skipped
+    return df
 
 
 def _numbers_from_text(df, decimal_comma: bool):
@@ -285,8 +377,8 @@ def select_columns(df, columns, where=None):
     return df[picked].copy()
 
 
-def _read_csv(path, columns=None, where=None):
-    return select_columns(read_table(path), columns, where)
+def _read_csv(path, columns=None, where=None, skip_rows=None):
+    return select_columns(read_table(path, skip_rows), columns, where)
 
 
 def _detect_layout(df, layout: str = "auto") -> str:
@@ -302,7 +394,7 @@ def _has_label(value) -> bool:
     return not pd.isna(value) and str(value).strip() != ""
 
 
-def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=None) -> dict:
+def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=None, skip_rows=None) -> dict:
     """What reading *path* for a plot keeps and leaves out, so it can be told to the
     reader (or to a language model asked "what did you do with the empty cells?").
 
@@ -313,7 +405,8 @@ def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=Non
     statistics, group by group; nothing is imputed. In a long table a row with no group
     label is left out too (it is not a group of its own)."""
     import pandas as pd
-    df = _read_csv(path)
+    df = _read_csv(path, skip_rows=skip_rows)
+    skipped = df.attrs.get("skipped_lines") or []
     df = select_columns(df, columns, where)
     out = {"layout": None, "groups": {}, "rows_without_group": 0, "summary": "empty table"}
     if df.shape[1] == 0:
@@ -350,16 +443,21 @@ def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=Non
     total_left = sum(t["missing"] + t["non_numeric"] for t in out["groups"].values()) + out["rows_without_group"]
     out["summary"] = ("; ".join(parts) + ("" if total_left else " — no value left out")
                       + (". Left-out cells are skipped per group, never filled in." if total_left else "."))
+    if skipped:
+        out["skipped_lines"] = skipped
+        out["summary"] += (f" The {len(skipped)} line(s) above the table were skipped ("
+                           + ", ".join(repr(str(t)[:40]) for t in skipped[:3]) + ").")
     return out
 
 
 def table_from_csv(path: str, layout: str = "auto", name: str | None = None, columns=None,
-                   where=None) -> DataTable:
+                   where=None, skip_rows=None) -> DataTable:
     """Build a column DataTable from a CSV.
 
     *columns*: the columns used, of a wider table (e.g. ["genotype", "area"]: long
     layout, group then value). *where*: only the rows matching this pandas query
-    ("day == 14", "sex == 'male'").
+    ("day == 14", "sex == 'male'"). *skip_rows*: lines above the table to skip (default:
+    found automatically).
 
     *layout*:
       - ``"wide"`` — every column is a group; rows are replicates (Prism-style).
@@ -368,7 +466,7 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
         non-numeric; wide otherwise.
     """
     import pandas as pd
-    df = _read_csv(path, columns, where)
+    df = _read_csv(path, columns, where, skip_rows)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] == 0:
         return DataTable(nm)
@@ -384,7 +482,10 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
             if not _has_label(g):
                 continue
             columns.setdefault(str(g).strip(), []).append(v)
-        return table_from_columns(columns, name=nm)
+        t = table_from_columns(columns, name=nm)
+        # the axis labels the table gives: "area (um2)" on y, not "Value"
+        t.value_name, t.group_name = str(vcol), str(gcol)
+        return t
 
     # wide
     columns = {}
@@ -394,12 +495,12 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
 
 
 def grouped_table_from_csv(path: str, name: str | None = None, columns=None,
-                           where=None) -> GroupedDataTable:
+                           where=None, skip_rows=None) -> GroupedDataTable:
     """Build a two-factor GroupedDataTable from a *long* CSV with three columns:
     ``factor_a`` (column group), ``factor_b`` (row label), ``value``. *columns*: the three
     columns used, of a wider (tidy) table, e.g. ["genotype", "sex", "area"]."""
     import pandas as pd
-    df = _read_csv(path, columns, where)
+    df = _read_csv(path, columns, where, skip_rows)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] < 3:
         raise ValueError("grouped plot needs a long CSV with 3 columns: "
@@ -427,6 +528,7 @@ def grouped_table_from_csv(path: str, name: str | None = None, columns=None,
     n_reps = max((len(v) for v in cells.values()), default=1)
     t = GroupedDataTable(nm, n_reps=n_reps)
     t.factor_names = (str(fa), str(fb))         # shown in the ANOVA note instead of "factor A / B"
+    t.value_name = str(val)                      # the y label when none is given
     for a in df[fa].astype(str):
         t.add_col_group(a)
     for b in df[fb].astype(str):
@@ -484,7 +586,7 @@ def _looks_xy(df) -> bool:
     return len(x) >= 5 and bool((x.diff().dropna() > 0).all())
 
 
-def suggest_kind(source, columns=None, where=None) -> dict:
+def suggest_kind(source, columns=None, where=None, skip_rows=None) -> dict:
     """The plot that shows a table best, and why (``kind="auto"``):
 
     * three columns, two of text and one of numbers -> ``grouped`` (two factors);
@@ -499,7 +601,7 @@ def suggest_kind(source, columns=None, where=None) -> dict:
     if isinstance(source, GroupedDataTable):
         return {"kind": "grouped", "reason": "a two-factor table", "n_min": None}
     if isinstance(source, str):
-        df = select_columns(read_table(source), columns, where)
+        df = select_columns(read_table(source, skip_rows), columns, where)
         if _looks_two_factor(df):
             return {"kind": "grouped", "n_min": None,
                     "reason": f"two factors ({df.columns[0]}, {df.columns[1]}) and a value ({df.columns[2]})"}
@@ -751,7 +853,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
          xtick_rotation: float | None = None, legend: str | None = None,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
-         show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both"):
+         show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
+         element_colors: dict | None = None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -794,10 +897,15 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
       * *violin_side* — ``"left"`` / ``"right"``: half violins (the points on the
         other side, a "raincloud"); ``"both"`` the whole violin;
       * *legend* — ``"inside"``, ``"outside"`` (right of the axes) or ``"none"``;
+      * *element_colors* — the colour of parts of the plot: ``{"points": "black",
+        "median": "red", "brackets": "#555555", "edges": "none"}`` (:data:`PLOT_ELEMENTS`
+        lists them; the groups' fill colours are *colors*);
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
     """
     kind = kind.lower()
+    # the y label the table gives (its value column: "area (um2)") when none is asked
+    ylabel = ylabel or getattr(table, "value_name", "") or ""
     if rename and isinstance(table, DataTable):
         table = _renamed(table, rename)
         order = [rename.get(o, o) for o in order] if order else order
@@ -843,9 +951,15 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
             pairs = split_pair_tests(x_levels, halves, arrays, parametric=parametric)
             pair_p = {c["x"]: c["p"] for c in pairs
                       if c["p"] is not None and (c["p"] < 0.05 or not only_significant)}
+        names = getattr(table, "factor_names", None)
+        if names:
+            h_name, x_name = (names[0], names[1]) if list(halves) == list(table.col_groups) else (names[1], names[0])
+        else:
+            h_name = x_name = ""
         fig = _plots.plot_split_violin(x_levels, halves, arrays, pair_p=pair_p,
                                        show_points=show_points, title=title, ylabel=ylabel,
-                                       xlabel=xlabel, colors=colors, violin_inner=violin_inner)
+                                       xlabel=xlabel or x_name, colors=colors, violin_inner=violin_inner,
+                                       legend_title=h_name)
         if annotate:
             stats_record = two_way_test(table)
             stats_record["split_comparisons"] = pairs
@@ -854,6 +968,13 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     elif kind == "grouped":
         fig = _plots.plot_grouped_bar(table, error_type=error, title=title,
                                       ylabel=ylabel, colors=colors)
+        names = getattr(table, "factor_names", None)
+        if names:
+            ax = fig.axes[0]
+            if ax.get_legend() is not None and ax.get_legend().get_title().get_text() in ("", "Group"):
+                ax.get_legend().set_title(names[0])          # what the colours are
+            if xlabel or not ax.get_xlabel():
+                ax.set_xlabel(xlabel or names[1])
         if annotate:
             stats_record = two_way_test(table)
             if "error" not in stats_record:
@@ -886,11 +1007,63 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                     t.set_text(str(rename[t.get_text()]))
     _apply_layout(fig, width=width, height=height, font_scale=font_scale, ylim=ylim,
                   log_y=log_y, xtick_rotation=xtick_rotation, legend=legend)
+    if element_colors:
+        apply_element_colors(fig, element_colors)
     if kind in ("grouped", "split_violin") and annotate and stats_record and "error" not in stats_record:
         # room for the ANOVA line under the axis labels (they ran into each other)
         lines = getattr(fig, "_staplot_note_lines", 1)
         fig.tight_layout(rect=(0, min(0.4, 0.012 + 0.026 * lines * 4 / max(fig.get_size_inches()[1], 1)), 1, 1))
     return fig, stats_record
+
+
+def apply_element_colors(fig, element_colors: dict) -> None:
+    """Colour parts of a plot drawn by staplot: {"points": "black", "median": "red",
+    "edges": "none", ...} (PLOT_ELEMENTS); an unknown part raises."""
+    from matplotlib.colors import to_rgba
+    unknown = [k for k in element_colors if k not in PLOT_ELEMENTS]
+    if unknown:
+        raise ValueError(f"no plot element {unknown}; the elements are {', '.join(PLOT_ELEMENTS)}")
+    colors = {}
+    for k, v in element_colors.items():
+        try:
+            colors[k] = "none" if str(v).lower() == "none" else to_rgba(v)
+        except ValueError:
+            raise ValueError(f"unknown colour {v!r} for {k}") from None
+    edge_gids = {"bar", "box", "violin"}
+    for ax in fig.axes:
+        for artist in ax.findobj():
+            gid = artist.get_gid()
+            if not gid:
+                continue
+            if gid in edge_gids and "edges" in colors:
+                if hasattr(artist, "set_edgecolor"):
+                    artist.set_edgecolor(colors["edges"])
+                elif hasattr(artist, "set_color"):          # a box drawn as lines
+                    artist.set_color(colors["edges"])
+            if gid not in colors:
+                continue
+            c = colors[gid]
+            if gid == "points":
+                artist.set_facecolor(c)
+            elif gid == "outliers" and hasattr(artist, "set_markeredgecolor"):
+                artist.set_markeredgecolor(c)
+                artist.set_markerfacecolor(c)
+            elif type(artist).__name__ == "Rectangle":      # the mini box of a violin
+                artist.set_edgecolor(c)
+            elif type(artist).__name__ == "PathCollection":  # the violin's median dot
+                artist.set_edgecolor(c)
+            elif hasattr(artist, "set_color"):
+                artist.set_color(c)
+        if "axes" in colors:
+            c = colors["axes"]
+            for spine in ax.spines.values():
+                spine.set_edgecolor(c)
+            ax.tick_params(colors=c)
+            ax.xaxis.label.set_color(c)
+            ax.yaxis.label.set_color(c)
+        if "background" in colors:
+            ax.set_facecolor(colors["background"])
+            fig.patch.set_facecolor(colors["background"])
 
 
 def split_parts(gtable, order=None):
@@ -1027,7 +1200,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               xtick_rotation: float | None = None, legend: str | None = None,
               show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
               show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
-              columns=None, where=None) -> str:
+              columns=None, where=None, skip_rows=None, element_colors: dict | None = None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1036,7 +1209,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     reader or reviewer can check every step without staplot."""
     from . import __version__
     if kind == "auto":
-        auto = suggest_kind(path, columns=columns, where=where)
+        auto = suggest_kind(path, columns=columns, where=where, skip_rows=skip_rows)
         if not auto["kind"]:
             raise ValueError(auto["reason"])
         kind = auto["kind"]
@@ -1057,7 +1230,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True),
                                  ("rename", dict(rename) if rename else None, None),
                                  ("show_points", show_points, True), ("violin_inner", violin_inner, "lines"),
-                                 ("violin_side", violin_side, "both")):
+                                 ("violin_side", violin_side, "both"),
+                                 ("element_colors", dict(element_colors) if element_colors else None, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin") else "table_from_csv"
@@ -1069,7 +1243,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
            "from staplot import api",
            "",
            f"table = api.{builder}(r{str(path)!r}" + (f", columns={list(columns)!r}" if columns else "")
-           + (f", where={where!r}" if where else "") + ")",
+           + (f", where={where!r}" if where else "")
+           + (f", skip_rows={int(skip_rows)}" if skip_rows not in (None, "auto") else "") + ")",
            "fig, stats_record = api.plot(table, " + ", ".join(args) + ")",
            'fig.savefig("plot.pdf")             # vector; or .png / .svg',
            "print(stats_record)",
@@ -1078,16 +1253,16 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
         return "\n".join(out)
     out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
     if kind in ("grouped", "split_violin"):
-        out += _grouped_code(path, columns, where)
+        out += _grouped_code(path, columns, where, skip_rows)
         if kind == "split_violin":
             out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns,
-                               where=where)
+                               where=where, skip_rows=skip_rows)
         return "\n".join(out)
-    table = table_from_csv(path, columns=columns, where=where)
+    table = table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
     # the data come from the table itself, read and cleaned in the script as staplot does
     out +=["import numpy as np", "import pandas as pd", "from scipy import stats", ""]
-    out += _loading_code(path, columns, where)
-    layout = _detect_layout(select_columns(read_table(path), columns, where))
+    out += _loading_code(path, columns, where, skip_rows)
+    layout = _detect_layout(select_columns(read_table(path, skip_rows), columns, where))
     if layout == "long":
         out += ["# long table: first column = group, second = value; rows without a group are skipped",
                 "group_col, value_col = df.columns[0], df.columns[1]",
@@ -1156,18 +1331,18 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     return "\n".join(out)
 
 
-def _loading_code(path: str, columns=None, where=None) -> list[str]:
-    lines = _loading_code_all(path)
+def _loading_code(path: str, columns=None, where=None, skip_rows=None) -> list[str]:
+    lines = _loading_code_all(path, skip_rows)
     if where:
         lines = lines[:-1] + [f"df = df.query({str(where)!r}, engine='python').reset_index(drop=True)"
                               "   # the rows the plot uses", ""]
     if columns:
-        cols = [str(c) for c in select_columns(read_table(path), columns).columns]
+        cols = [str(c) for c in select_columns(read_table(path, skip_rows), columns).columns]
         lines = lines[:-1] + [f"df = df[{cols!r}]                  # the columns the plot uses", ""]
     return lines
 
 
-def _loading_code_all(path: str) -> list[str]:
+def _loading_code_all(path: str, skip_rows=None) -> list[str]:
     """pandas code that reads *path* into ``df`` as read_table does: the separator and
     decimal mark of a text table, or an Excel sheet without its blank margin and with
     numbers typed as text read as numbers."""
@@ -1181,9 +1356,11 @@ def _loading_code_all(path: str) -> list[str]:
                 ""]
     if not is_excel(file):
         with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
-            sep, decimal = csv_format(f.read(4096))
-        lines = ["# the table, as staplot reads it",
-                 f"df = pd.read_csv(r{file!r}, sep={sep!r}, decimal={decimal!r}, encoding='utf-8-sig')"]
+            head = "".join(line for _i, line in zip(range(400), f))
+        skip, sep, decimal = _text_preamble(head, skip_rows)
+        lines = ["# the table, as staplot reads it" + (f" (the {skip} line(s) above it skipped)" if skip else ""),
+                 f"df = pd.read_csv(r{file!r}, sep={sep!r}, decimal={decimal!r}, encoding='utf-8-sig'"
+                 + (f", skiprows={skip}" if skip else "") + ")"]
         if decimal == ",":
             lines += ["# a typo in a column keeps it as text: its decimal commas are read here",
                       "for c in df.columns:",
@@ -1193,9 +1370,16 @@ def _loading_code_all(path: str) -> list[str]:
         return lines + [""]
     engine = "xlrd" if file.lower().endswith(".xls") else "openpyxl"
     sheet_arg = (repr(int(sheet) - 1) if sheet and sheet.strip().isdigit() else repr(sheet)) if sheet else "0"
-    return ["# the table: the Excel sheet, as staplot reads it",
-            f"raw = pd.read_excel(r{file!r}, sheet_name={sheet_arg}, header=None, engine={engine!r})",
-            "raw = raw.dropna(how='all').dropna(axis=1, how='all')      # blank margin rows / columns",
+    out = ["# the table: the Excel sheet, as staplot reads it",
+            f"raw = pd.read_excel(r{file!r}, sheet_name={sheet_arg}, header=None, engine={engine!r})"]
+    if skip_rows not in (None, "auto") and int(skip_rows):
+        out.append(f"raw = raw.iloc[{int(skip_rows)}:]                         # the rows above the table")
+    out.append("raw = raw.dropna(how='all').dropna(axis=1, how='all')      # blank margin rows / columns")
+    if skip_rows in (None, "auto"):
+        n = len(read_table(path).attrs.get("skipped_lines") or [])
+        if n:
+            out.append(f"raw = raw.iloc[{n}:].dropna(axis=1, how='all')           # the title / notes above the table")
+    return out + [
             "df = raw.iloc[1:].reset_index(drop=True)",
             "df.columns = [str(v).strip() for v in raw.iloc[0]]          # first row = headers",
             "for c in df.columns:                                        # numbers typed as text ('5,5')",
@@ -1205,13 +1389,13 @@ def _loading_code_all(path: str) -> list[str]:
             ""]
 
 
-def _grouped_code(path: str, columns=None, where=None) -> list[str]:
-    df = select_columns(read_table(path), columns, where)
+def _grouped_code(path: str, columns=None, where=None, skip_rows=None) -> list[str]:
+    df = select_columns(read_table(path, skip_rows), columns, where)
     if df.shape[1] < 3:
         return ["# a grouped plot needs 3 columns (factor A, factor B, value)"]
     lines = ["import pandas as pd", "import statsmodels.formula.api as smf",
              "from statsmodels.stats.anova import anova_lm", ""]
-    lines += _loading_code(path, columns, where)
+    lines += _loading_code(path, columns, where, skip_rows)
     lines += ["# long table: factor A, factor B, value (rows with a missing cell are left out)",
               "data = df.iloc[:, :3].copy()",
               "data.columns = ['A', 'B', 'value']",
@@ -1223,9 +1407,10 @@ def _grouped_code(path: str, columns=None, where=None) -> list[str]:
     return lines
 
 
-def _split_code(path: str, order=None, parametric=None, columns=None, where=None) -> list[str]:
+def _split_code(path: str, order=None, parametric=None, columns=None, where=None,
+                skip_rows=None) -> list[str]:
     """The halves of each split violin compared with scipy, as staplot did."""
-    gtable = grouped_table_from_csv(path, columns=columns, where=where)
+    gtable = grouped_table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
     x_levels, halves, arrays = split_parts(gtable, order=order)
     pairs = split_pair_tests(x_levels, halves, arrays, parametric=parametric)
     h_col = "A" if list(halves) == list(gtable.col_groups) else "B"

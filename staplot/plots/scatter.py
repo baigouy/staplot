@@ -45,7 +45,7 @@ def plot_scatter(
         # colour-blind readers (user, 2026-11-18)
         marker = styles.marker(i)
         ax.scatter(xi, yi, color=color, s=30, zorder=3, alpha=0.8, marker=marker,
-                   linewidths=0.4, edgecolors="white", label=y_name)
+                   linewidths=0.4, edgecolors="white", label=y_name, gid="points")
 
         if show_regression and len(xi) >= 3:
             slope, intercept, r, p_val, _ = stats.linregress(xi, yi)
@@ -53,7 +53,7 @@ def plot_scatter(
             ax.plot(x_line, slope * x_line + intercept, color=color, linewidth=1.5,
                     linestyle="--", alpha=0.8,
                     # format_p: "p=0.0000" printed for any p < 5e-5
-                    label=f"  R²={r**2:.3f}, {format_p(p_val)}")
+                    label=f"  R²={r**2:.3f}, {format_p(p_val)}", gid="fit")
 
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or ", ".join(y_names))

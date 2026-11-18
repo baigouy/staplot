@@ -71,11 +71,11 @@ def add_significance_brackets(
 
     for xa, xb, y, p_val, label in drawn:
         # Horizontal bar
-        ax.plot([xa, xb], [y, y], "-", color=color, lw=lw, clip_on=False)
+        ax.plot([xa, xb], [y, y], "-", color=color, lw=lw, clip_on=False, gid="brackets")
         # Left tick
-        ax.plot([xa, xa], [y - tip, y], "-", color=color, lw=lw, clip_on=False)
+        ax.plot([xa, xa], [y - tip, y], "-", color=color, lw=lw, clip_on=False, gid="brackets")
         # Right tick
-        ax.plot([xb, xb], [y - tip, y], "-", color=color, lw=lw, clip_on=False)
+        ax.plot([xb, xb], [y - tip, y], "-", color=color, lw=lw, clip_on=False, gid="brackets")
         # Label
         mid = (xa + xb) / 2
         bold = label not in ("ns", "n/a")
@@ -85,6 +85,7 @@ def add_significance_brackets(
             fontsize=fontsize,
             fontweight="bold" if bold else "normal",
             color=color,
+            gid="brackets",
         )
 
     # Expand y-axis to show topmost bracket + padding

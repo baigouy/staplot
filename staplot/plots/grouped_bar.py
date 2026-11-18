@@ -78,15 +78,17 @@ def plot_grouped_bar(
         # bars
         ax.bar(bx, means, width=bar_w * 0.88,
                color=c, alpha=0.85, label=cg,
-               zorder=3, edgecolor="white", linewidth=0.5)
+               zorder=3, edgecolor="white", linewidth=0.5, gid="bar")
 
         # error bars
         valid = [(bx[j], means[j], errs[j])
                  for j in range(n_rows) if not np.isnan(means[j]) and errs[j] > 0]
         if valid:
             vx, vy, ve = zip(*valid)
-            ax.errorbar(vx, vy, yerr=ve, fmt="none",
-                        color="#333333", linewidth=1.2, capsize=3, zorder=4)
+            eb = ax.errorbar(vx, vy, yerr=ve, fmt="none",
+                             color="#333333", linewidth=1.2, capsize=3, zorder=4)
+            for part in eb.get_children():
+                part.set_gid("error_bars")
 
         # jittered data points
         if show_points:
@@ -96,7 +98,7 @@ def plot_grouped_bar(
                 jitter = rng.uniform(-bar_w * 0.18, bar_w * 0.18, len(arr))
                 ax.scatter(bx_j + jitter, arr,
                            color="white", edgecolors=c,
-                           s=22, alpha=0.9, linewidths=0.8, zorder=5)
+                           s=22, alpha=0.9, linewidths=0.8, zorder=5, gid="points")
 
     ax.set_xticks(x_base)
     ax.set_xticklabels(

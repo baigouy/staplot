@@ -212,3 +212,40 @@ def test_only_some_rows(tidy):
     code = api.plot_code(tidy, "violin", columns=["genotype", "area"], where="sex == 'male'")
     assert "where=\"sex == 'male'\"" in code and "df.query(\"sex == 'male'\"" in code
     exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_colour_parts_of_a_plot(csv, tidy):
+    """"make the points black", "the medians red", "no outline", "grey brackets"."""
+    from matplotlib.colors import to_rgba
+    t = api.table_from_csv(csv)
+    fig = api.plot(t, "box", element_colors={"points": "black", "median": "red", "brackets": "#888888",
+                                              "edges": "none"})[0]
+    ax = fig.axes[0]
+    pts = [a for a in ax.findobj() if a.get_gid() == "points"]
+    assert pts and all(tuple(p.get_facecolor()[0])[:3] == to_rgba("black")[:3] for p in pts)
+    meds = [a for a in ax.findobj() if a.get_gid() == "median"]
+    assert len(meds) == 3 and all(to_rgba(m.get_color()) == to_rgba("red") for m in meds)
+    brackets = [a for a in ax.findobj() if a.get_gid() == "brackets"]
+    assert brackets and all(to_rgba(b.get_color()) == to_rgba("#888888") for b in brackets)
+    for kind in ("bar", "violin"):
+        api.plot(t, kind, element_colors={"points": "blue", "edges": "black", "error_bars": "red",
+                                          "inner": "white", "axes": "#333333"})
+    gt = api.grouped_table_from_csv(tidy, columns=["genotype", "sex", "area"])
+    api.plot(gt, "split_violin", element_colors={"points": "black", "median": "red"})
+    with pytest.raises(ValueError, match="no plot element"):
+        api.plot(t, "box", element_colors={"whisker_tips": "red"})
+    with pytest.raises(ValueError, match="unknown colour"):
+        api.plot(t, "box", element_colors={"points": "blurple"})
+
+
+def test_axis_labels_come_from_the_table(tidy):
+    """A long table names its value column: "area" on y (not "Value"), the factors on x
+    and as the legend's title."""
+    fig = api.plot(api.table_from_csv(tidy, columns=["genotype", "area"]), "box")[0]
+    assert fig.axes[0].get_ylabel() == "area"
+    gt = api.grouped_table_from_csv(tidy, columns=["genotype", "sex", "area"])
+    ax = api.plot(gt, "split_violin")[0].axes[0]
+    assert (ax.get_ylabel(), ax.get_xlabel(), ax.get_legend().get_title().get_text()) == ("area", "genotype", "sex")
+    ax = api.plot(gt, "grouped")[0].axes[0]
+    assert (ax.get_ylabel(), ax.get_xlabel(), ax.get_legend().get_title().get_text()) == ("area", "sex", "genotype")
+    assert api.plot(gt, "grouped", ylabel="Area (µm²)")[0].axes[0].get_ylabel() == "Area (µm²)"

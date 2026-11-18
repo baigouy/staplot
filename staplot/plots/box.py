@@ -37,7 +37,7 @@ def _violin(ax, x, arr, color, inner="lines", side="both", label=None):
         lo_edge = x if side == "right" else x - half
         hi_edge = x if side == "left" else x + half
         ax.fill_betweenx(y, lo_edge, hi_edge, facecolor=color, alpha=0.7,
-                         edgecolor="#333333", linewidth=0.8, zorder=2, label=label)
+                         edgecolor="#333333", linewidth=0.8, zorder=2, label=label, gid="violin")
         top = float(y[-1])
     # a half violin: its inner marks inside the half, next to the flat edge
     x = x + {"left": -1, "right": 1}.get(side, 0) * VIOLIN_HALF_WIDTH * 0.15
@@ -47,15 +47,16 @@ def _violin(ax, x, arr, color, inner="lines", side="both", label=None):
         lo = float(arr[arr >= q1 - 1.5 * iqr].min())
         hi = float(arr[arr <= q3 + 1.5 * iqr].max())
         w = VIOLIN_HALF_WIDTH * (0.3 if side == "both" else 0.18)
-        ax.vlines(x, lo, q1, color="#333333", linewidth=0.9, zorder=3)
-        ax.vlines(x, q3, hi, color="#333333", linewidth=0.9, zorder=3)
+        ax.vlines(x, lo, q1, color="#333333", linewidth=0.9, zorder=3, gid="inner")
+        ax.vlines(x, q3, hi, color="#333333", linewidth=0.9, zorder=3, gid="inner")
         ax.add_patch(Rectangle((x - w / 2, q1), w, q3 - q1, facecolor="white", edgecolor="#333333",
-                               linewidth=0.9, zorder=3))
-        ax.hlines(med, x - w / 2, x + w / 2, color="#333333", linewidth=1.4, zorder=4)
+                               linewidth=0.9, zorder=3, gid="inner"))
+        ax.hlines(med, x - w / 2, x + w / 2, color="#333333", linewidth=1.4, zorder=4, gid="median")
     elif inner != "none":
-        ax.vlines(x, arr.min(), arr.max(), color="#333333", linewidth=1.0, zorder=3)
-        ax.vlines(x, q1, q3, color="#333333", linewidth=4.0 if side == "both" else 3.0, zorder=3)
-        ax.scatter([x], [med], s=14 if side == "both" else 9, color="white", edgecolors="#333333", linewidths=0.6, zorder=4)
+        ax.vlines(x, arr.min(), arr.max(), color="#333333", linewidth=1.0, zorder=3, gid="inner")
+        ax.vlines(x, q1, q3, color="#333333", linewidth=4.0 if side == "both" else 3.0, zorder=3, gid="inner")
+        ax.scatter([x], [med], s=14 if side == "both" else 9, color="white", edgecolors="#333333", linewidths=0.6, zorder=4,
+                   gid="median")
     return top                  # the brackets go above the tapered tip, not the data
 
 
@@ -112,6 +113,11 @@ def plot_box(
         for patch, color in zip(bp["boxes"], palette):
             patch.set_facecolor(color)
             patch.set_alpha(0.75)
+        # named parts, for element_colors ("make the medians red")
+        for part, gid in (("boxes", "box"), ("medians", "median"), ("whiskers", "whiskers"),
+                          ("caps", "whiskers"), ("fliers", "outliers")):
+            for artist in bp.get(part, []):
+                artist.set_gid(gid)
 
     if show_points:
         rng = np.random.default_rng(42)
@@ -131,6 +137,7 @@ def plot_box(
                 linewidths=0.3,
                 edgecolors="white",
                 picker=5,
+                gid="points",
             )
             sc._staplot_meta = {"column": col.name, "rows": row_idxs, "exclude_all": False}
 
@@ -166,6 +173,7 @@ def plot_split_violin(
     xlabel: str = "",
     colors: list | None = None,
     violin_inner: str = "lines",
+    legend_title: str = "",
 ) -> matplotlib.figure.Figure:
     """Split violins: at each *x_levels* position, the left half is ``halves[0]`` and
     the right half ``halves[1]`` (two conditions side by side: sex, treatment...), a
@@ -187,7 +195,7 @@ def plot_split_violin(
                 arr = arr[np.isfinite(arr)]
                 off = -0.2 if side == "left" else 0.2
                 ax.scatter(i + off + rng.uniform(-0.04, 0.04, arr.size), arr, color="#222222", s=10,
-                           zorder=5, alpha=0.6, linewidths=0.3, edgecolors="white")
+                           zorder=5, alpha=0.6, linewidths=0.3, edgecolors="white", gid="points")
     ax.set_xticks(range(len(x_levels)))
     ax.set_xticklabels([str(v) for v in x_levels])
     ax.set_ylabel(ylabel or "Value")
@@ -196,8 +204,12 @@ def plot_split_violin(
     ax.set_title(title)
     # the halves named in the plot (which side is which condition)
     # above the axes: inside, it ran into the brackets
-    ax.legend(frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
-              fontsize=8, handlelength=1.0, borderaxespad=0.2)
+    leg = ax.legend(frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3 if legend_title else 2,
+                    fontsize=8, handlelength=1.0, borderaxespad=0.2)
+    if legend_title:
+        # the factor named above its two levels ("sex": female, male)
+        leg.set_title(legend_title, prop={"size": 8})
+        leg._legend_box.align = "left"
     if pair_p:
         y_lo, y_hi = ax.get_ylim()
         rng_y = y_hi - y_lo
@@ -209,10 +221,11 @@ def plot_split_violin(
             y = tops.get(xl, y_hi) + 0.03 * rng_y
             tip = 0.02 * rng_y
             ax.plot([i - 0.2, i - 0.2, i + 0.2, i + 0.2], [y - tip, y, y, y - tip], "-",
-                    color="#222222", lw=1.0, clip_on=False)
+                    color="#222222", lw=1.0, clip_on=False, gid="brackets")
             label = significance_stars(p)
             ax.text(i, y + tip * 0.3, label, ha="center", va="bottom", fontsize=9,
-                    fontweight="bold" if label not in ("ns", "n/a") else "normal", color="#222222")
+                    fontweight="bold" if label not in ("ns", "n/a") else "normal", color="#222222",
+                    gid="brackets")
             new_top = max(new_top, y + 0.1 * rng_y)
         if new_top > y_hi:
             ax.set_ylim(top=new_top)
