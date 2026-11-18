@@ -1,6 +1,6 @@
 from .bar import plot_bar
 from .scatter import plot_scatter
-from .box import plot_box
+from .box import plot_box, plot_split_violin
 from .survival import plot_survival
 from .before_after import plot_before_after
 from .histogram import plot_histogram

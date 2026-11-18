@@ -11,7 +11,7 @@ open-source alternative to GraphPad Prism, with a desktop app and a small Python
   repeated measures, Kruskal-Wallis, post-hoc tests (Tukey, Dunn, ...), chi-square,
   correlation, linear and nonlinear regression (curve fitting), normality tests,
   outliers, ROC, survival, power analysis.
-- **Plots:** bar, box, violin, scatter, grouped bar, before/after, histogram, QQ,
+- **Plots:** bar, box, violin (whole or half: `violin_side="left"`), split violin (`kind="split_violin"`: two conditions as the two halves, each pair tested), scatter, grouped bar, before/after, histogram, QQ,
   residuals, Bland-Altman, heatmap, volcano, ROC and survival curves, with
   significance brackets added automatically.
 - A test wizard that picks the right test for your data and explains why.

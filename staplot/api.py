@@ -58,7 +58,8 @@ __all__ = [
     "PLOT_KINDS",
 ]
 
-PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped")
+PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin")
+VIOLIN_SIDES = ("both", "left", "right")
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +259,24 @@ def _numbers_from_text(df, decimal_comma: bool):
     return df.infer_objects()
 
 
-def _read_csv(path):
-    return read_table(path)
+def select_columns(df, columns):
+    """*df* reduced to *columns* (names, any case), in that order: the columns of a wider
+    (tidy) table a plot uses, e.g. ["genotype", "sex", "area"] of a table that also
+    has day and treatment. None keeps every column."""
+    if not columns:
+        return df
+    low = {str(c).strip().lower(): c for c in df.columns}
+    picked, missing = [], []
+    for c in columns:
+        key = str(c).strip().lower()
+        (picked if key in low else missing).append(low.get(key, c))
+    if missing:
+        raise ValueError(f"no column {missing}; the columns are {', '.join(map(str, df.columns))}")
+    return df[picked].copy()
+
+
+def _read_csv(path, columns=None):
+    return select_columns(read_table(path), columns)
 
 
 def _detect_layout(df, layout: str = "auto") -> str:
@@ -275,7 +292,7 @@ def _has_label(value) -> bool:
     return not pd.isna(value) and str(value).strip() != ""
 
 
-def csv_cleaning_report(path: str, layout: str = "auto") -> dict:
+def csv_cleaning_report(path: str, layout: str = "auto", columns=None) -> dict:
     """What reading *path* for a plot keeps and leaves out, so it can be told to the
     reader (or to a language model asked "what did you do with the empty cells?").
 
@@ -287,6 +304,7 @@ def csv_cleaning_report(path: str, layout: str = "auto") -> dict:
     label is left out too (it is not a group of its own)."""
     import pandas as pd
     df = _read_csv(path)
+    df = select_columns(df, columns)
     out = {"layout": None, "groups": {}, "rows_without_group": 0, "summary": "empty table"}
     if df.shape[1] == 0:
         return out
@@ -325,8 +343,11 @@ def csv_cleaning_report(path: str, layout: str = "auto") -> dict:
     return out
 
 
-def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> DataTable:
+def table_from_csv(path: str, layout: str = "auto", name: str | None = None, columns=None) -> DataTable:
     """Build a column DataTable from a CSV.
+
+    *columns*: the columns used, of a wider table (e.g. ["genotype", "area"]: long
+    layout, group then value).
 
     *layout*:
       - ``"wide"`` — every column is a group; rows are replicates (Prism-style).
@@ -335,7 +356,7 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> 
         non-numeric; wide otherwise.
     """
     import pandas as pd
-    df = _read_csv(path)
+    df = _read_csv(path, columns)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] == 0:
         return DataTable(nm)
@@ -360,11 +381,12 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None) -> 
     return table_from_columns(columns, name=nm)
 
 
-def grouped_table_from_csv(path: str, name: str | None = None) -> GroupedDataTable:
+def grouped_table_from_csv(path: str, name: str | None = None, columns=None) -> GroupedDataTable:
     """Build a two-factor GroupedDataTable from a *long* CSV with three columns:
-    ``factor_a`` (column group), ``factor_b`` (row label), ``value``."""
+    ``factor_a`` (column group), ``factor_b`` (row label), ``value``. *columns*: the three
+    columns used, of a wider (tidy) table, e.g. ["genotype", "sex", "area"]."""
     import pandas as pd
-    df = _read_csv(path)
+    df = _read_csv(path, columns)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] < 3:
         raise ValueError("grouped plot needs a long CSV with 3 columns: "
@@ -373,6 +395,9 @@ def grouped_table_from_csv(path: str, name: str | None = None) -> GroupedDataTab
     values = pd.to_numeric(df[val], errors="coerce")
 
     def numeric_share(col):
+        # a factor coded by a few numbers (day 7 / 14, a 0 / 1 code) is a factor too
+        if df[col].dropna().nunique() <= 12:
+            return 0.0
         return pd.to_numeric(df[col], errors="coerce").notna().mean()
     # a wide table (one column per condition) read as long gives a nonsense
     # plot and a degenerate ANOVA instead of an error
@@ -388,6 +413,7 @@ def grouped_table_from_csv(path: str, name: str | None = None) -> GroupedDataTab
         cells.setdefault((a, b), []).append(_to_float_or_none(v))
     n_reps = max((len(v) for v in cells.values()), default=1)
     t = GroupedDataTable(nm, n_reps=n_reps)
+    t.factor_names = (str(fa), str(fb))         # shown in the ANOVA note instead of "factor A / B"
     for a in df[fa].astype(str):
         t.add_col_group(a)
     for b in df[fb].astype(str):
@@ -445,7 +471,7 @@ def _looks_xy(df) -> bool:
     return len(x) >= 5 and bool((x.diff().dropna() > 0).all())
 
 
-def suggest_kind(source) -> dict:
+def suggest_kind(source, columns=None) -> dict:
     """The plot that shows a table best, and why (``kind="auto"``):
 
     * three columns, two of text and one of numbers -> ``grouped`` (two factors);
@@ -460,7 +486,7 @@ def suggest_kind(source) -> dict:
     if isinstance(source, GroupedDataTable):
         return {"kind": "grouped", "reason": "a two-factor table", "n_min": None}
     if isinstance(source, str):
-        df = read_table(source)
+        df = select_columns(read_table(source), columns)
         if _looks_two_factor(df):
             return {"kind": "grouped", "n_min": None,
                     "reason": f"two factors ({df.columns[0]}, {df.columns[1]}) and a value ({df.columns[2]})"}
@@ -681,13 +707,15 @@ def correlation_test(table: DataTable, method: str = "pearson") -> dict:
     return rec
 
 
-def _annotate_two_way(fig, rec):
+def _annotate_two_way(fig, rec, names=None):
     parts = []
+    a, b = names if names else ("factor A", "factor B")
+    shown = {"factor A": a, "factor B": b, "A x B": f"{a} × {b}"}
     for e in rec.get("effects", []):
         if e["p"] is None:
             continue
         tail = "" if e["stars"] in ("ns", "n/a") else " " + e["stars"]
-        parts.append(f"{e['effect']}: p={e['p']:.3g}{tail}")
+        parts.append(f"{shown.get(e['effect'], e['effect'])}: p={e['p']:.3g}{tail}")
     if parts:
         # one effect per line: on one line it was wider than the plot, and a panel sized
         # to it squeezed the bars (PyFigures, 2026-11-18)
@@ -710,11 +738,16 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
          xtick_rotation: float | None = None, legend: str | None = None,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
-         show_points: bool = True, violin_inner: str = "lines"):
+         show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both"):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
-    *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"``, or
-    ``"auto"``: the one that shows the data best (:func:`suggest_kind`).
+    *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
+    ``"split_violin"``, or ``"auto"``: the one that shows the data best (:func:`suggest_kind`).
+    ``split_violin`` takes a grouped (two-factor) table where one factor has two levels
+    (sex, treatment...): one violin per level of the other factor, its left half the
+    first condition and its right half the second, a legend naming the halves; each
+    pair is compared (t-test or Mann-Whitney, as :func:`auto_test` picks) and the
+    two-way ANOVA is printed under the axes.
     When *annotate* is set:
       * bar/box/violin — groups compared with :func:`auto_test`; significant
         pairs drawn as brackets.
@@ -745,6 +778,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
       * *show_points* — False: no individual points on bar / box / violin plots;
       * *violin_inner* — inside each violin: ``"lines"`` (range, quartiles, median
         dot), ``"box"`` (a mini box plot) or ``"none"``;
+      * *violin_side* — ``"left"`` / ``"right"``: half violins (the points on the
+        other side, a "raincloud"); ``"both"`` the whole violin;
       * *legend* — ``"inside"``, ``"outside"`` (right of the axes) or ``"none"``;
       * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
         *ylabel* means the automatic one, "Value" or the column's name).
@@ -770,25 +805,46 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
 
     if violin_inner not in ("lines", "box", "none"):
         raise ValueError("violin_inner must be 'lines', 'box' or 'none'")
+    if violin_side not in VIOLIN_SIDES:
+        raise ValueError("violin_side must be 'both', 'left' or 'right'")
+    if kind == "split_violin" and isinstance(table, DataTable):
+        raise ValueError("split_violin needs a two-factor table (three columns: e.g. genotype, "
+                         "sex, value) where one factor has two levels; for half violins of "
+                         "one factor use kind='violin' with violin_side='left'")
     if kind == "bar":
         fig = _plots.plot_bar(table, error_type=error, title=title, ylabel=ylabel,
                               colors=colors, sig_pairs=sig_pairs, show_points=show_points)
     elif kind in ("box", "violin"):
         fig = _plots.plot_box(table, plot_type=kind, title=title, ylabel=ylabel,
                               colors=colors, sig_pairs=sig_pairs, show_points=show_points,
-                              violin_inner=violin_inner)
+                              violin_inner=violin_inner, violin_side=violin_side)
     elif kind == "scatter":
         fig = _plots.plot_scatter(table, title=title, xlabel=xlabel, ylabel=ylabel,
                                   colors=colors)
         if annotate:
             stats_record = correlation_test(table)
+    elif kind == "split_violin":
+        x_levels, halves, arrays = split_parts(table, order=order)
+        pair_p, pairs = None, None
+        if annotate:
+            pairs = split_pair_tests(x_levels, halves, arrays, parametric=parametric)
+            pair_p = {c["x"]: c["p"] for c in pairs
+                      if c["p"] is not None and (c["p"] < 0.05 or not only_significant)}
+        fig = _plots.plot_split_violin(x_levels, halves, arrays, pair_p=pair_p,
+                                       show_points=show_points, title=title, ylabel=ylabel,
+                                       xlabel=xlabel, colors=colors, violin_inner=violin_inner)
+        if annotate:
+            stats_record = two_way_test(table)
+            stats_record["split_comparisons"] = pairs
+            if "error" not in stats_record:
+                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None))
     elif kind == "grouped":
         fig = _plots.plot_grouped_bar(table, error_type=error, title=title,
                                       ylabel=ylabel, colors=colors)
         if annotate:
             stats_record = two_way_test(table)
             if "error" not in stats_record:
-                _annotate_two_way(fig, stats_record)
+                _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None))
     if not show_title and not title:
         for ax in fig.axes:
             ax.set_title("")
@@ -817,11 +873,53 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                     t.set_text(str(rename[t.get_text()]))
     _apply_layout(fig, width=width, height=height, font_scale=font_scale, ylim=ylim,
                   log_y=log_y, xtick_rotation=xtick_rotation, legend=legend)
-    if kind == "grouped" and annotate and stats_record and "error" not in stats_record:
+    if kind in ("grouped", "split_violin") and annotate and stats_record and "error" not in stats_record:
         # room for the ANOVA line under the axis labels (they ran into each other)
         lines = getattr(fig, "_staplot_note_lines", 1)
         fig.tight_layout(rect=(0, min(0.4, 0.012 + 0.026 * lines * 4 / max(fig.get_size_inches()[1], 1)), 1, 1))
     return fig, stats_record
+
+
+def split_parts(gtable, order=None):
+    """(x_levels, halves, arrays) of a two-factor table for split violins: the factor
+    with two levels gives the halves (the second column's if both have two: a table
+    "genotype, sex, area" reads x = genotype, split by sex), the other the x positions;
+    arrays[(x_level, half)] = the values."""
+    a, b = list(gtable.col_groups), list(gtable.row_labels)
+    if len(b) == 2:
+        halves, x_levels, key = b, a, (lambda x, h: (x, h))
+    elif len(a) == 2:
+        halves, x_levels, key = a, b, (lambda x, h: (h, x))
+    else:
+        raise ValueError(f"split violins need a factor with two levels (the two halves); "
+                         f"{gtable.name} has {len(a)} ({', '.join(a)}) and {len(b)} "
+                         f"({', '.join(b)}): use kind='grouped', or a seaborn violinplot")
+    if order:
+        low = {str(x).lower(): x for x in x_levels}
+        x_levels = [low[str(o).lower()] for o in order if str(o).lower() in low] or x_levels
+    arrays = {}
+    for x in x_levels:
+        for h in halves:
+            cg, rl = key(x, h)
+            arrays[(x, h)] = [float(v) for v in gtable.data.get(cg, {}).get(rl, [])
+                              if v is not None and np.isfinite(float(v))]
+    return x_levels, halves, arrays
+
+
+def split_pair_tests(x_levels, halves, arrays, parametric=None) -> list[dict]:
+    """At each x position, the two halves compared as :func:`auto_test` compares two
+    groups (Welch t-test or Mann-Whitney)."""
+    out = []
+    for x in x_levels:
+        cols = {str(h): arrays[(x, h)] for h in halves}
+        rec = {"x": str(x), "a": str(halves[0]), "b": str(halves[1]), "test": None, "p": None}
+        if all(len(v) >= 2 for v in cols.values()):
+            r = auto_test(table_from_columns(cols, name=str(x)), only_significant=False,
+                          parametric=parametric)
+            if r.get("comparisons"):
+                rec["test"], rec["p"] = r.get("test"), r["comparisons"][0]["p"]
+        out.append(rec)
+    return out
 
 
 def _renamed(table, rename):
@@ -915,7 +1013,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
               xtick_rotation: float | None = None, legend: str | None = None,
               show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
-              show_points: bool = True, violin_inner: str = "lines") -> str:
+              show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
+              columns=None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -924,7 +1023,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     reader or reviewer can check every step without staplot."""
     from . import __version__
     if kind == "auto":
-        auto = suggest_kind(path)
+        auto = suggest_kind(path, columns=columns)
         if not auto["kind"]:
             raise ValueError(auto["reason"])
         kind = auto["kind"]
@@ -944,10 +1043,11 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("xtick_rotation", xtick_rotation, None), ("legend", legend, None),
                                  ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True),
                                  ("rename", dict(rename) if rename else None, None),
-                                 ("show_points", show_points, True), ("violin_inner", violin_inner, "lines")):
+                                 ("show_points", show_points, True), ("violin_inner", violin_inner, "lines"),
+                                 ("violin_side", violin_side, "both")):
         if value != default:
             args.append(f"{name}={value!r}")
-    builder = "grouped_table_from_csv" if kind == "grouped" else "table_from_csv"
+    builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin") else "table_from_csv"
     out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
            "# Part 1 redraws the figure; part 2 runs the statistics without staplot.",
@@ -955,7 +1055,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
            "# --- 1. the figure " + "-" * 60,
            "from staplot import api",
            "",
-           f"table = api.{builder}(r{str(path)!r})",
+           f"table = api.{builder}(r{str(path)!r}" + (f", columns={list(columns)!r}" if columns else "") + ")",
            "fig, stats_record = api.plot(table, " + ", ".join(args) + ")",
            'fig.savefig("plot.pdf")             # vector; or .png / .svg',
            "print(stats_record)",
@@ -963,14 +1063,16 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     if not annotate:
         return "\n".join(out)
     out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
-    if kind == "grouped":
-        out += _grouped_code(path)
+    if kind in ("grouped", "split_violin"):
+        out += _grouped_code(path, columns)
+        if kind == "split_violin":
+            out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns)
         return "\n".join(out)
-    table = table_from_csv(path)
+    table = table_from_csv(path, columns=columns)
     # the data come from the table itself, read and cleaned in the script as staplot does
     out +=["import numpy as np", "import pandas as pd", "from scipy import stats", ""]
-    out += _loading_code(path)
-    layout = _detect_layout(read_table(path))
+    out += _loading_code(path, columns)
+    layout = _detect_layout(select_columns(read_table(path), columns))
     if layout == "long":
         out += ["# long table: first column = group, second = value; rows without a group are skipped",
                 "group_col, value_col = df.columns[0], df.columns[1]",
@@ -1039,7 +1141,15 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     return "\n".join(out)
 
 
-def _loading_code(path: str) -> list[str]:
+def _loading_code(path: str, columns=None) -> list[str]:
+    lines = _loading_code_all(path)
+    if columns:
+        cols = [str(c) for c in select_columns(read_table(path), columns).columns]
+        lines = lines[:-1] + [f"df = df[{cols!r}]                  # the columns the plot uses", ""]
+    return lines
+
+
+def _loading_code_all(path: str) -> list[str]:
     """pandas code that reads *path* into ``df`` as read_table does: the separator and
     decimal mark of a text table, or an Excel sheet without its blank margin and with
     numbers typed as text read as numbers."""
@@ -1077,13 +1187,13 @@ def _loading_code(path: str) -> list[str]:
             ""]
 
 
-def _grouped_code(path: str) -> list[str]:
-    df = read_table(path)
+def _grouped_code(path: str, columns=None) -> list[str]:
+    df = select_columns(read_table(path), columns)
     if df.shape[1] < 3:
         return ["# a grouped plot needs 3 columns (factor A, factor B, value)"]
     lines = ["import pandas as pd", "import statsmodels.formula.api as smf",
              "from statsmodels.stats.anova import anova_lm", ""]
-    lines += _loading_code(path)
+    lines += _loading_code(path, columns)
     lines += ["# long table: factor A, factor B, value (rows with a missing cell are left out)",
               "data = df.iloc[:, :3].copy()",
               "data.columns = ['A', 'B', 'value']",
@@ -1092,4 +1202,28 @@ def _grouped_code(path: str) -> list[str]:
               "data[['A', 'B']] = data[['A', 'B']].astype(str)"]
     lines += ["model = smf.ols('value ~ C(A) * C(B)', data=data).fit()",
               "print(anova_lm(model, typ=2))      # factor A, factor B and A x B rows"]
+    return lines
+
+
+def _split_code(path: str, order=None, parametric=None, columns=None) -> list[str]:
+    """The halves of each split violin compared with scipy, as staplot did."""
+    gtable = grouped_table_from_csv(path, columns=columns)
+    x_levels, halves, arrays = split_parts(gtable, order=order)
+    pairs = split_pair_tests(x_levels, halves, arrays, parametric=parametric)
+    h_col = "A" if list(halves) == list(gtable.col_groups) else "B"
+    x_col = "B" if h_col == "A" else "A"
+    lines = ["", f"# split violins: at each {x_col} level, the two halves ({h_col} = "
+                 f"{halves[0]!r} vs {halves[1]!r}) compared",
+             "from scipy import stats"]
+    for c in pairs:
+        if not c["test"]:
+            continue
+        sel = "data[(data." + x_col + " == " + repr(c["x"]) + ") & (data." + h_col + " == {h})].value"
+        lines.append("left, right = " + sel.format(h=repr(c["a"])) + ", " + sel.format(h=repr(c["b"])))
+        if str(c["test"]).startswith("Welch"):
+            lines.append(f"print({c['x']!r}, stats.ttest_ind(left, right, equal_var=False))   # Welch t-test")
+        elif str(c["test"]).startswith("Mann"):
+            lines.append(f"print({c['x']!r}, stats.mannwhitneyu(left, right, alternative='two-sided'))")
+        else:
+            lines.append(f"# {c['x']}: {c['test']}")
     return lines

@@ -133,3 +133,67 @@ def test_points_off_and_a_box_inside_the_violins(csv):
     assert dots(api.plot(t, "bar", annotate=False, show_points=False)[0]) == 0
     with pytest.raises(ValueError):
         api.plot(t, "violin", violin_inner="dots")
+
+
+@pytest.fixture
+def tidy(tmp_path):
+    """A tidy table: genotype, treatment, sex, area (sex: two levels)."""
+    rng = np.random.default_rng(3)
+    rows = []
+    for g, ge in (("WT", 0), ("mutA", -20), ("mutB", 5)):
+        for t in ("ctrl", "drug"):
+            for sx, se in (("female", 0), ("male", 30)):
+                rows += [(g, t, sx, 200 + ge + se + rng.normal(0, 8)) for _ in range(12)]
+    path = tmp_path / "mice.csv"
+    pd.DataFrame(rows, columns=["genotype", "treatment", "sex", "area"]).to_csv(path, index=False)
+    return str(path)
+
+
+def test_half_violins_with_the_points_on_the_open_side(csv):
+    """"make it half violins" (PyFigures chat, 2026-11-18: it could not)."""
+    t = api.table_from_csv(csv)
+    fig = api.plot(t, "violin", violin_side="left", annotate=False)[0]
+    ax = fig.axes[0]
+    shapes = [c for c in ax.collections if type(c).__name__ in ("PolyCollection", "FillBetweenPolyCollection")]
+    assert len(shapes) == 3
+    for i, poly in enumerate(shapes):
+        xs = poly.get_paths()[0].vertices[:, 0]
+        assert xs.max() <= i + 1e-9 and xs.min() < i - 0.1          # the left half only
+    points = [c for c in ax.collections if type(c).__name__ == "PathCollection" and len(c.get_offsets()) > 3]
+    assert all((p.get_offsets()[:, 0] > np.round(p.get_offsets()[:, 0].mean())).all() for p in points)
+    with pytest.raises(ValueError):
+        api.plot(t, "violin", violin_side="top")
+
+
+def test_split_violins_by_sex_from_columns_of_a_tidy_table(tidy):
+    """Split violins: one violin per genotype, female / male halves, a legend naming them,
+    each pair tested, the ANOVA note naming the factors."""
+    gt = api.grouped_table_from_csv(tidy, columns=["Genotype", "sex", "area"])
+    fig, rec = api.plot(gt, "split_violin", violin_inner="box")
+    ax = fig.axes[0]
+    assert [x.get_text() for x in ax.get_xticklabels()] == ["WT", "mutA", "mutB"]
+    assert [x.get_text() for x in ax.get_legend().get_texts()] == ["female", "male"]
+    assert [c["x"] for c in rec["split_comparisons"]] == ["WT", "mutA", "mutB"]
+    assert all(c["p"] < 0.001 for c in rec["split_comparisons"])
+    note = " ".join(t.get_text() for t in fig.texts)
+    assert "genotype:" in note and "sex:" in note and "factor A" not in note
+    three = os.path.join(os.path.dirname(tidy), "three.csv")
+    pd.DataFrame({"g": list("aabbcc") * 3, "d": ["d1", "d2", "d3"] * 6, "v": range(18)}).to_csv(three, index=False)
+    with pytest.raises(ValueError, match="two levels"):
+        api.plot(api.grouped_table_from_csv(three), "split_violin")
+    with pytest.raises(ValueError, match="two-factor"):
+        api.plot(api.table_from_csv(tidy, columns=["genotype", "area"]), "split_violin")
+    with pytest.raises(ValueError, match="no column"):
+        api.grouped_table_from_csv(tidy, columns=["genotype", "age", "area"])
+
+
+def test_split_violin_code_reruns_the_tests_with_scipy(tidy):
+    code = api.plot_code(tidy, "split_violin", columns=["genotype", "sex", "area"])
+    assert "columns=['genotype', 'sex', 'area']" in code and "mannwhitneyu" in code or "ttest_ind" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_one_factor_plot_from_two_columns_of_a_tidy_table(tidy):
+    t = api.table_from_csv(tidy, columns=["genotype", "area"])
+    assert sorted(t.group_arrays()) == ["WT", "mutA", "mutB"] or set(t.group_arrays()) == {"WT", "mutA", "mutB"}
+    assert api.suggest_kind(tidy, columns=["genotype", "sex", "area"])["kind"] == "grouped"
