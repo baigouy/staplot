@@ -1148,6 +1148,30 @@ def _details(result, table, kind, ax=None, element_colors=None, *, show_n=False,
     return fig, rec
 
 
+def _colors_by_name(table, kind, colors: dict, rename=None) -> list:
+    """A colour per group given by name ({"WT": "black", "mutA": "red"}, any case, the
+    table's or the shown name) as the plotters' list, in the groups' order; the groups
+    not named keep the palette's colour."""
+    from .plots import styles as _styles
+    if isinstance(table, DataTable):
+        names = [c.name for c in table.columns]
+    elif kind == "split_violin":
+        names = list(split_parts(table)[1])
+    else:
+        names = list(table.col_groups)
+    shown = {str(n).lower(): str((rename or {}).get(n, n)).lower() for n in names}
+    low = {str(k).strip().lower(): v for k, v in colors.items()}
+    known = set(shown) | set(shown.values())
+    unknown = [k for k in colors if str(k).strip().lower() not in known]
+    if unknown:
+        raise ValueError(f"no group {unknown} to colour; the groups are {', '.join(map(str, names))}")
+    out = []
+    for i, n in enumerate(names):
+        key = str(n).lower()
+        out.append(low.get(key, low.get(shown[key], _styles.color(i))))
+    return out
+
+
 def plot_part(artist) -> str | None:
     """The part of a staplot plot an artist draws ("points", "median", "brackets",
     "edges"...: PLOT_ELEMENTS), or None."""
@@ -1177,6 +1201,8 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
               violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
               facet_ax=None, control=None):
     kind = kind.lower()
+    if isinstance(colors, dict):
+        colors = _colors_by_name(table, kind, colors, rename)
     # the y label the table gives (its value column: "area (um2)") when none is asked
     ylabel = ylabel or getattr(table, "value_name", "") or ""
     if rename and isinstance(table, DataTable):
