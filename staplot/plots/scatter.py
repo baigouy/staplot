@@ -41,7 +41,10 @@ def plot_scatter(
             continue
         color = (colors[i] if colors and i < len(colors) else styles.color(i))
 
-        ax.scatter(xi, yi, color=color, s=30, zorder=3, alpha=0.8,
+        # one shape per series as well as one colour: told apart in grey print and by
+        # colour-blind readers (user, 2026-11-18)
+        marker = styles.marker(i)
+        ax.scatter(xi, yi, color=color, s=30, zorder=3, alpha=0.8, marker=marker,
                    linewidths=0.4, edgecolors="white", label=y_name)
 
         if show_regression and len(xi) >= 3:

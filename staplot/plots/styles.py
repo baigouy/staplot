@@ -152,3 +152,12 @@ def current_preset() -> str:
 
 def color(index: int) -> str:
     return PALETTE[index % len(PALETTE)]
+
+
+# marker shapes for series of points, in this order (with the colours: a series is
+# told apart by its shape too)
+MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
+
+
+def marker(index: int) -> str:
+    return MARKERS[index % len(MARKERS)]

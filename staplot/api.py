@@ -336,6 +336,101 @@ def grouped_table_from_csv(path: str, name: str | None = None) -> GroupedDataTab
 
 
 # ---------------------------------------------------------------------------
+# Automatic plot kind
+# ---------------------------------------------------------------------------
+
+# n per group (the smallest group) from which a box, then a violin, shows the data best
+BOX_FROM_N = 5
+VIOLIN_FROM_N = 20
+_XY_NAMES = ({"x", "y"}, {"time", "value"}, {"dose", "response"}, {"concentration", "signal"})
+
+
+def _looks_two_factor(df) -> bool:
+    import pandas as pd
+    if df.shape[1] != 3:
+        return False
+    share = [pd.to_numeric(df.iloc[:, i], errors="coerce").notna().mean() for i in range(3)]
+    return share[0] < 0.5 and share[1] < 0.5 and share[2] >= 0.5
+
+
+def _unit(name) -> str | None:
+    """The unit of a column name: "area (um2)" -> "um2", "length [µm]" -> "µm"."""
+    import re
+    m = re.search(r"[(\[]([^)\]]+)[)\]]\s*$", str(name))
+    return m.group(1).strip().lower() if m else None
+
+
+def _looks_xy(df) -> bool:
+    """Two numeric columns that are one series (x, y), not two groups: named x / y
+    (time, dose…), in different units (area (um2), intensity (a.u.)), or the first
+    column a strictly increasing series. Two groups in the same unit stay groups, even
+    when they correlate (before / after measures do)."""
+    import pandas as pd
+    if df.shape[1] != 2:
+        return False
+    x = pd.to_numeric(df.iloc[:, 0], errors="coerce")
+    y = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+    if x.notna().mean() < 0.9 or y.notna().mean() < 0.9:
+        return False
+    names = {str(c).strip().lower() for c in df.columns}
+    if any(pair <= names for pair in _XY_NAMES) or any(" vs " in n for n in names):
+        return True
+    units = [_unit(c) for c in df.columns]
+    if all(units) and units[0] != units[1]:
+        return True
+    x = x.dropna()
+    return len(x) >= 5 and bool((x.diff().dropna() > 0).all())
+
+
+def suggest_kind(source) -> dict:
+    """The plot that shows a table best, and why (``kind="auto"``):
+
+    * three columns, two of text and one of numbers -> ``grouped`` (two factors);
+    * two numeric columns making one x/y series (named x / y, time, dose…, or the
+      first column strictly increasing) -> ``scatter``;
+    * groups -> by the smallest group's n: under 5 points ``bar`` (mean +- SD with
+      every point: a box or a violin of 3 points says nothing), 5 to 19 ``box``,
+      20 or more ``violin`` (enough points for a shape).
+
+    *source*: a table path (CSV, TXT, Excel ``book.xlsx::sheet``) or a DataTable /
+    GroupedDataTable. Returns ``{"kind", "reason", "n_min"}``."""
+    if isinstance(source, GroupedDataTable):
+        return {"kind": "grouped", "reason": "a two-factor table", "n_min": None}
+    if isinstance(source, str):
+        df = read_table(source)
+        if _looks_two_factor(df):
+            return {"kind": "grouped", "n_min": None,
+                    "reason": f"two factors ({df.columns[0]}, {df.columns[1]}) and a value ({df.columns[2]})"}
+        if _looks_xy(df):
+            return {"kind": "scatter", "n_min": None,
+                    "reason": f"one series, {df.columns[1]} against {df.columns[0]}"}
+        import pandas as pd
+        text = [str(c) for c in df.columns if pd.to_numeric(df[c], errors="coerce").notna().mean() < 0.5]
+        if text and _detect_layout(df) == "wide":
+            numeric = [str(c) for c in df.columns if str(c) not in text]
+            if not numeric:
+                return {"kind": None, "n_min": None, "reason": "no column of numbers to plot"}
+            return {"kind": None, "n_min": None,
+                    "reason": (f"a tidy table with factors ({', '.join(text)}) and measures "
+                               f"({', '.join(numeric)}): say which measure against which factor "
+                               f"(in PyFigures: a seaborn plot, e.g. catplot)")}
+        table = table_from_csv(source)
+    else:
+        table = source
+    ns = [len(c.valid_values()) for c in table.columns]
+    ns = [n for n in ns if n] or [0]
+    n_min = min(ns)
+    if n_min < BOX_FROM_N:
+        kind, why = "bar", f"few points per group (n = {n_min}): mean +- SD with every point shown"
+    elif n_min < VIOLIN_FROM_N:
+        span = f"{n_min}" if n_min == max(ns) else f"{n_min} to {max(ns)}"
+        kind, why = "box", f"n = {span} per group: median and quartiles, every point shown"
+    else:
+        kind, why = "violin", f"n >= {n_min} per group: enough points to show each distribution's shape"
+    return {"kind": kind, "reason": why, "n_min": n_min}
+
+
+# ---------------------------------------------------------------------------
 # Automatic test selection
 # ---------------------------------------------------------------------------
 def _normality_testable(arr: np.ndarray) -> bool:
@@ -544,10 +639,15 @@ _STATS_MODE = {"auto": None, "parametric": True, "nonparametric": False}
 @_plots.styles.styled  # the two-way ANOVA note is added after the plot is built
 def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          only_significant: bool = True, stats_mode: str = "auto", title: str = "",
-         ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = True):
+         ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = True,
+         aspect: float | None = None, width: float | None = None, height: float | None = None,
+         font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
+         xtick_rotation: float | None = None, legend: str | None = None,
+         show_ylabel: bool = True, show_xlabel: bool = True):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
-    *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"``.
+    *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"``, or
+    ``"auto"``: the one that shows the data best (:func:`suggest_kind`).
     When *annotate* is set:
       * bar/box/violin — groups compared with :func:`auto_test`; significant
         pairs drawn as brackets.
@@ -561,10 +661,27 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
 
     *show_title*: False draws no title unless *title* is given (otherwise the
     table name is used) — journals rarely want titles on figure panels.
+
+    Layout and size (all optional; the default figure is unchanged):
+      * *aspect* — width / height ("wider" 1.5-2, "taller" 0.6-0.8);
+      * *width*, *height* — the figure size in inches; a smaller figure makes the
+        text and lines relatively bigger once the plot is scaled into a panel;
+      * *font_scale* — every text times this (1.3 = 30 % bigger);
+      * *order* — the groups in this order (names; groups left out are dropped);
+      * *ylim* — ``(low, high)`` of the y axis (``None`` for either keeps it automatic);
+      * *log_y* — a log y axis;
+      * *xtick_rotation* — degrees for the x tick labels (long group names);
+      * *legend* — ``"inside"``, ``"outside"`` (right of the axes) or ``"none"``;
+      * *show_ylabel* / *show_xlabel* — False: no axis label at all (an empty
+        *ylabel* means the automatic one, "Value" or the column's name).
     """
     kind = kind.lower()
+    if order and isinstance(table, DataTable):
+        table = _reordered(table, order)
+    if kind == "auto":
+        kind = suggest_kind(table)["kind"]
     if kind not in PLOT_KINDS:
-        raise ValueError(f"unknown plot kind {kind!r}; expected one of {PLOT_KINDS}")
+        raise ValueError(f"unknown plot kind {kind!r}; expected one of {PLOT_KINDS} or 'auto'")
     parametric = _STATS_MODE.get(stats_mode, None)
 
     stats_record = None
@@ -596,15 +713,98 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
         for ax in fig.axes:
             ax.set_title("")
         fig.tight_layout()  # give the title's room back to the axes
+    if aspect:
+        # width / height of the plot: in a figure row a plot is as tall as its
+        # neighbours, so a wider plot takes more of the row (user: "make k plot wider")
+        _w, h = fig.get_size_inches()
+        fig.set_size_inches(max(0.2, float(aspect)) * h, h)
+        fig.tight_layout()
+    if not show_ylabel or not show_xlabel:
+        # "I want the label of the y axis gone": not the automatic "Value" instead
+        for ax in fig.axes[:1]:
+            if not show_ylabel:
+                ax.set_ylabel("")
+            if not show_xlabel:
+                ax.set_xlabel("")
+        fig.tight_layout()
+    _apply_layout(fig, width=width, height=height, font_scale=font_scale, ylim=ylim,
+                  log_y=log_y, xtick_rotation=xtick_rotation, legend=legend)
     if kind == "grouped" and annotate and stats_record and "error" not in stats_record:
         # room for the ANOVA line under the axis labels (they ran into each other)
         fig.tight_layout(rect=(0, 0.06, 1, 1))
     return fig, stats_record
 
 
+def _reordered(table, order):
+    """A copy of *table* with its groups in *order* (names, case-insensitive);
+    unknown names raise, groups left out are dropped."""
+    import copy
+    by_name = {c.name.lower(): c for c in table.columns}
+    missing = [o for o in order if str(o).lower() not in by_name]
+    if missing:
+        raise ValueError(f"no group named {missing}; groups: {[c.name for c in table.columns]}")
+    out = copy.copy(table)
+    out.columns = [by_name[str(o).lower()] for o in order]
+    return out
+
+
+LEGEND_PLACES = ("inside", "outside", "none")
+
+
+def _apply_layout(fig, *, width=None, height=None, font_scale=None, ylim=None, log_y=False,
+                  xtick_rotation=None, legend=None):
+    """The size and layout options of :func:`plot`, on a drawn figure."""
+    if not any((width, height, font_scale, ylim, log_y, xtick_rotation is not None, legend)):
+        return
+    w0, h0 = fig.get_size_inches()
+    if width or height:
+        w = float(width) if width else w0 * (float(height) / h0)     # one given: keep the shape
+        h = float(height) if height else h0 * (float(width) / w0)
+        fig.set_size_inches(max(0.5, w), max(0.5, h))
+    if font_scale:
+        for text in fig.findobj(lambda o: hasattr(o, "get_fontsize") and hasattr(o, "set_fontsize")):
+            try:
+                text.set_fontsize(text.get_fontsize() * float(font_scale))
+            except (TypeError, ValueError):
+                pass
+    for ax in fig.axes:
+        if log_y:
+            ax.set_yscale("log")
+        if ylim:
+            lo, hi = (list(ylim) + [None, None])[:2]
+            cur_lo, cur_hi = ax.get_ylim()
+            ax.set_ylim(cur_lo if lo is None else float(lo), cur_hi if hi is None else float(hi))
+        if xtick_rotation is not None:
+            for t in ax.get_xticklabels():
+                t.set_rotation(float(xtick_rotation))
+                t.set_ha("right" if 0 < float(xtick_rotation) % 180 < 90 else "center")
+        if legend:
+            if legend not in LEGEND_PLACES:
+                raise ValueError(f"legend must be one of {LEGEND_PLACES}")
+            old = ax.get_legend()
+            if old is not None:
+                if legend == "none":
+                    old.remove()
+                else:
+                    handles, labels = ax.get_legend_handles_labels()
+                    title = old.get_title().get_text()
+                    size = old.get_texts()[0].get_fontsize() if old.get_texts() else None
+                    old.remove()
+                    if legend == "outside":
+                        ax.legend(handles, labels, title=title or None, fontsize=size, frameon=False,
+                                  loc="upper left", bbox_to_anchor=(1.0, 1.0))
+                    else:
+                        ax.legend(handles, labels, title=title or None, fontsize=size, loc="best")
+    fig.tight_layout()
+
+
 def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
               only_significant: bool = True, stats_mode: str = "auto", title: str = "",
-              ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = False) -> str:
+              ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = False, aspect: float | None = None,
+              width: float | None = None, height: float | None = None,
+              font_scale: float | None = None, order=None, ylim=None, log_y: bool = False,
+              xtick_rotation: float | None = None, legend: str | None = None,
+              show_ylabel: bool = True, show_xlabel: bool = True) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -612,6 +812,11 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     left out) and runs the same statistics with scipy / statsmodels alone, so a
     reader or reviewer can check every step without staplot."""
     from . import __version__
+    if kind == "auto":
+        auto = suggest_kind(path)
+        if not auto["kind"]:
+            raise ValueError(auto["reason"])
+        kind = auto["kind"]
     file, sheet = split_sheet(path)
     path = os.path.abspath(file) + (SHEET_SEP + sheet if sheet else "")    # runs from any folder
     args = [f"kind={kind!r}"]
@@ -620,7 +825,13 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("stats_mode", stats_mode, "auto"), ("title", title, ""),
                                  ("ylabel", ylabel, ""), ("xlabel", xlabel, ""),
                                  ("colors", list(colors) if colors else None, None),
-                                 ("show_title", show_title, True)):
+                                 ("show_title", show_title, True), ("aspect", aspect, None),
+                                 ("width", width, None), ("height", height, None),
+                                 ("font_scale", font_scale, None),
+                                 ("order", list(order) if order else None, None),
+                                 ("ylim", list(ylim) if ylim else None, None), ("log_y", log_y, False),
+                                 ("xtick_rotation", xtick_rotation, None), ("legend", legend, None),
+                                 ("show_ylabel", show_ylabel, True), ("show_xlabel", show_xlabel, True)):
         if value != default:
             args.append(f"{name}={value!r}")
     builder = "grouped_table_from_csv" if kind == "grouped" else "table_from_csv"
@@ -658,8 +869,12 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     else:
         out += ["# wide table: one column per group; empty, NA and non-numeric cells are left out",
                 "groups = {str(c): pd.to_numeric(df[c], errors='coerce').dropna().tolist() for c in df.columns}"]
-    out += ["groups = {g: v for g, v in groups.items() if v}",
-            "names = list(groups)",
+    out += ["groups = {g: v for g, v in groups.items() if v}"]
+    if order:
+        out += ["# the plot's group order (groups left out are not plotted nor tested)",
+                "_by_name = {g.lower(): g for g in groups}",
+                f"groups = {{_by_name[o.lower()]: groups[_by_name[o.lower()]] for o in {[str(o) for o in order]!r}}}"]
+    out += ["names = list(groups)",
             "arrays = [np.asarray(groups[n], float) for n in names]",
             'print({n: len(a) for n, a in zip(names, arrays)})      # n per group', ""]
     if kind == "scatter":
@@ -670,6 +885,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                 "r, p = stats.pearsonr(x[both], y[both])",
                 'print(f"r = {r:.3f}, R² = {r * r:.3f}, p = {p:.3g}, n = {int(both.sum())}")']
         return "\n".join(out)
+    if order:
+        table = _reordered(table, order)
     rec = auto_test(table, only_significant=only_significant,
                     parametric=_STATS_MODE.get(stats_mode))
     test = str(rec.get("test", ""))
