@@ -197,3 +197,18 @@ def test_one_factor_plot_from_two_columns_of_a_tidy_table(tidy):
     t = api.table_from_csv(tidy, columns=["genotype", "area"])
     assert sorted(t.group_arrays()) == ["WT", "mutA", "mutB"] or set(t.group_arrays()) == {"WT", "mutA", "mutB"}
     assert api.suggest_kind(tidy, columns=["genotype", "sex", "area"])["kind"] == "grouped"
+
+
+def test_only_some_rows(tidy):
+    """"only the drug-treated mice", "only day 14": a pandas query on any column."""
+    t = api.table_from_csv(tidy, columns=["genotype", "area"], where="treatment == 'drug' and sex == 'male'")
+    assert {k: len(v) for k, v in t.group_arrays().items()} == {"WT": 12, "mutA": 12, "mutB": 12}
+    gt = api.grouped_table_from_csv(tidy, columns=["genotype", "sex", "area"], where="treatment == 'ctrl'")
+    assert sum(len([v for v in cell if v is not None]) for g in gt.data.values() for cell in g.values()) == 72
+    with pytest.raises(ValueError, match="cannot keep the rows"):
+        api.table_from_csv(tidy, columns=["genotype", "area"], where="age > 3")
+    with pytest.raises(ValueError, match="no row where"):
+        api.table_from_csv(tidy, columns=["genotype", "area"], where="area < 0")
+    code = api.plot_code(tidy, "violin", columns=["genotype", "area"], where="sex == 'male'")
+    assert "where=\"sex == 'male'\"" in code and "df.query(\"sex == 'male'\"" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})

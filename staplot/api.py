@@ -259,10 +259,20 @@ def _numbers_from_text(df, decimal_comma: bool):
     return df.infer_objects()
 
 
-def select_columns(df, columns):
-    """*df* reduced to *columns* (names, any case), in that order: the columns of a wider
-    (tidy) table a plot uses, e.g. ["genotype", "sex", "area"] of a table that also
-    has day and treatment. None keeps every column."""
+def select_columns(df, columns, where=None):
+    """*df* reduced to the rows matching *where* (a pandas query on any column: "day ==
+    14", "sex == 'male' and area > 100"; backquotes around names with spaces) and to
+    *columns* (names, any case), in that order: the columns of a wider (tidy) table a
+    plot uses, e.g. ["genotype", "sex", "area"] of a table that also has day and
+    treatment. None keeps every row / column."""
+    if where:
+        try:
+            df = df.query(str(where), engine="python").reset_index(drop=True)
+        except Exception as e:
+            raise ValueError(f"cannot keep the rows where {where!r} ({type(e).__name__}: {e}); the "
+                             f"columns are {', '.join(map(str, df.columns))}") from None
+        if df.empty:
+            raise ValueError(f"no row where {where}")
     if not columns:
         return df
     low = {str(c).strip().lower(): c for c in df.columns}
@@ -275,8 +285,8 @@ def select_columns(df, columns):
     return df[picked].copy()
 
 
-def _read_csv(path, columns=None):
-    return select_columns(read_table(path), columns)
+def _read_csv(path, columns=None, where=None):
+    return select_columns(read_table(path), columns, where)
 
 
 def _detect_layout(df, layout: str = "auto") -> str:
@@ -292,7 +302,7 @@ def _has_label(value) -> bool:
     return not pd.isna(value) and str(value).strip() != ""
 
 
-def csv_cleaning_report(path: str, layout: str = "auto", columns=None) -> dict:
+def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=None) -> dict:
     """What reading *path* for a plot keeps and leaves out, so it can be told to the
     reader (or to a language model asked "what did you do with the empty cells?").
 
@@ -304,7 +314,7 @@ def csv_cleaning_report(path: str, layout: str = "auto", columns=None) -> dict:
     label is left out too (it is not a group of its own)."""
     import pandas as pd
     df = _read_csv(path)
-    df = select_columns(df, columns)
+    df = select_columns(df, columns, where)
     out = {"layout": None, "groups": {}, "rows_without_group": 0, "summary": "empty table"}
     if df.shape[1] == 0:
         return out
@@ -343,11 +353,13 @@ def csv_cleaning_report(path: str, layout: str = "auto", columns=None) -> dict:
     return out
 
 
-def table_from_csv(path: str, layout: str = "auto", name: str | None = None, columns=None) -> DataTable:
+def table_from_csv(path: str, layout: str = "auto", name: str | None = None, columns=None,
+                   where=None) -> DataTable:
     """Build a column DataTable from a CSV.
 
     *columns*: the columns used, of a wider table (e.g. ["genotype", "area"]: long
-    layout, group then value).
+    layout, group then value). *where*: only the rows matching this pandas query
+    ("day == 14", "sex == 'male'").
 
     *layout*:
       - ``"wide"`` — every column is a group; rows are replicates (Prism-style).
@@ -356,7 +368,7 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
         non-numeric; wide otherwise.
     """
     import pandas as pd
-    df = _read_csv(path, columns)
+    df = _read_csv(path, columns, where)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] == 0:
         return DataTable(nm)
@@ -381,12 +393,13 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
     return table_from_columns(columns, name=nm)
 
 
-def grouped_table_from_csv(path: str, name: str | None = None, columns=None) -> GroupedDataTable:
+def grouped_table_from_csv(path: str, name: str | None = None, columns=None,
+                           where=None) -> GroupedDataTable:
     """Build a two-factor GroupedDataTable from a *long* CSV with three columns:
     ``factor_a`` (column group), ``factor_b`` (row label), ``value``. *columns*: the three
     columns used, of a wider (tidy) table, e.g. ["genotype", "sex", "area"]."""
     import pandas as pd
-    df = _read_csv(path, columns)
+    df = _read_csv(path, columns, where)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] < 3:
         raise ValueError("grouped plot needs a long CSV with 3 columns: "
@@ -471,7 +484,7 @@ def _looks_xy(df) -> bool:
     return len(x) >= 5 and bool((x.diff().dropna() > 0).all())
 
 
-def suggest_kind(source, columns=None) -> dict:
+def suggest_kind(source, columns=None, where=None) -> dict:
     """The plot that shows a table best, and why (``kind="auto"``):
 
     * three columns, two of text and one of numbers -> ``grouped`` (two factors);
@@ -486,7 +499,7 @@ def suggest_kind(source, columns=None) -> dict:
     if isinstance(source, GroupedDataTable):
         return {"kind": "grouped", "reason": "a two-factor table", "n_min": None}
     if isinstance(source, str):
-        df = select_columns(read_table(source), columns)
+        df = select_columns(read_table(source), columns, where)
         if _looks_two_factor(df):
             return {"kind": "grouped", "n_min": None,
                     "reason": f"two factors ({df.columns[0]}, {df.columns[1]}) and a value ({df.columns[2]})"}
@@ -1014,7 +1027,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               xtick_rotation: float | None = None, legend: str | None = None,
               show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
               show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
-              columns=None) -> str:
+              columns=None, where=None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1023,7 +1036,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     reader or reviewer can check every step without staplot."""
     from . import __version__
     if kind == "auto":
-        auto = suggest_kind(path, columns=columns)
+        auto = suggest_kind(path, columns=columns, where=where)
         if not auto["kind"]:
             raise ValueError(auto["reason"])
         kind = auto["kind"]
@@ -1055,7 +1068,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
            "# --- 1. the figure " + "-" * 60,
            "from staplot import api",
            "",
-           f"table = api.{builder}(r{str(path)!r}" + (f", columns={list(columns)!r}" if columns else "") + ")",
+           f"table = api.{builder}(r{str(path)!r}" + (f", columns={list(columns)!r}" if columns else "")
+           + (f", where={where!r}" if where else "") + ")",
            "fig, stats_record = api.plot(table, " + ", ".join(args) + ")",
            'fig.savefig("plot.pdf")             # vector; or .png / .svg',
            "print(stats_record)",
@@ -1064,15 +1078,16 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
         return "\n".join(out)
     out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
     if kind in ("grouped", "split_violin"):
-        out += _grouped_code(path, columns)
+        out += _grouped_code(path, columns, where)
         if kind == "split_violin":
-            out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns)
+            out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns,
+                               where=where)
         return "\n".join(out)
-    table = table_from_csv(path, columns=columns)
+    table = table_from_csv(path, columns=columns, where=where)
     # the data come from the table itself, read and cleaned in the script as staplot does
     out +=["import numpy as np", "import pandas as pd", "from scipy import stats", ""]
-    out += _loading_code(path, columns)
-    layout = _detect_layout(select_columns(read_table(path), columns))
+    out += _loading_code(path, columns, where)
+    layout = _detect_layout(select_columns(read_table(path), columns, where))
     if layout == "long":
         out += ["# long table: first column = group, second = value; rows without a group are skipped",
                 "group_col, value_col = df.columns[0], df.columns[1]",
@@ -1141,8 +1156,11 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     return "\n".join(out)
 
 
-def _loading_code(path: str, columns=None) -> list[str]:
+def _loading_code(path: str, columns=None, where=None) -> list[str]:
     lines = _loading_code_all(path)
+    if where:
+        lines = lines[:-1] + [f"df = df.query({str(where)!r}, engine='python').reset_index(drop=True)"
+                              "   # the rows the plot uses", ""]
     if columns:
         cols = [str(c) for c in select_columns(read_table(path), columns).columns]
         lines = lines[:-1] + [f"df = df[{cols!r}]                  # the columns the plot uses", ""]
@@ -1187,13 +1205,13 @@ def _loading_code_all(path: str) -> list[str]:
             ""]
 
 
-def _grouped_code(path: str, columns=None) -> list[str]:
-    df = select_columns(read_table(path), columns)
+def _grouped_code(path: str, columns=None, where=None) -> list[str]:
+    df = select_columns(read_table(path), columns, where)
     if df.shape[1] < 3:
         return ["# a grouped plot needs 3 columns (factor A, factor B, value)"]
     lines = ["import pandas as pd", "import statsmodels.formula.api as smf",
              "from statsmodels.stats.anova import anova_lm", ""]
-    lines += _loading_code(path, columns)
+    lines += _loading_code(path, columns, where)
     lines += ["# long table: factor A, factor B, value (rows with a missing cell are left out)",
               "data = df.iloc[:, :3].copy()",
               "data.columns = ['A', 'B', 'value']",
@@ -1205,9 +1223,9 @@ def _grouped_code(path: str, columns=None) -> list[str]:
     return lines
 
 
-def _split_code(path: str, order=None, parametric=None, columns=None) -> list[str]:
+def _split_code(path: str, order=None, parametric=None, columns=None, where=None) -> list[str]:
     """The halves of each split violin compared with scipy, as staplot did."""
-    gtable = grouped_table_from_csv(path, columns=columns)
+    gtable = grouped_table_from_csv(path, columns=columns, where=where)
     x_levels, halves, arrays = split_parts(gtable, order=order)
     pairs = split_pair_tests(x_levels, halves, arrays, parametric=parametric)
     h_col = "A" if list(halves) == list(gtable.col_groups) else "B"
