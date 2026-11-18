@@ -99,18 +99,69 @@ def csv_format(sample: str) -> tuple[str, str]:
 
 
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
+SQLITE_EXTENSIONS = (".sqlite", ".sqlite3", ".db", ".db3")
 SHEET_SEP = "::"
 
 
 def split_sheet(path: str) -> tuple[str, str | None]:
     """("data.xlsx", "Sheet2") for "data.xlsx::Sheet2"; (path, None) otherwise.
-    A sheet is named by its name or its number from 1."""
+    A sheet is named by its name or its number from 1. For an SQLite database
+    ("cells.db::measurements"), the part after :: is a table (or view) name, its
+    number from 1, or an SQL query ("cells.db::SELECT genotype, area FROM cells")."""
     path = str(path)
     if SHEET_SEP in path:
-        file, sheet = path.rsplit(SHEET_SEP, 1)
-        if file.lower().endswith(EXCEL_EXTENSIONS):
+        file, sheet = path.split(SHEET_SEP, 1)
+        if file.lower().endswith(EXCEL_EXTENSIONS + SQLITE_EXTENSIONS) or _sqlite_header(file):
             return file, (sheet or None)
     return path, None
+
+
+def _sqlite_header(file: str) -> bool:
+    """The file starts with SQLite's magic header (a database under any name)."""
+    try:
+        with open(file, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except (OSError, ValueError):
+        return False
+
+
+def is_sqlite(path: str) -> bool:
+    """An SQLite database, by its header: a ".db" may be something else, and a
+    database may have any name."""
+    return _sqlite_header(split_sheet(path)[0])
+
+
+def _sqlite_tables(file: str) -> list[str]:
+    import sqlite3
+    con = sqlite3.connect(f"file:{file}?mode=ro", uri=True)
+    try:
+        rows = con.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') "
+                           "AND name NOT LIKE 'sqlite_%' ORDER BY type, rowid").fetchall()
+    finally:
+        con.close()
+    return [r[0] for r in rows]
+
+
+def _sqlite_query(file: str, sheet: str | None) -> str:
+    """The SQL that reads the table asked for: a query as it is, a table or view by
+    name (any case) or number from 1, else the first table."""
+    names = _sqlite_tables(file)
+    if sheet and sheet.strip().lower().startswith(("select ", "with ")):
+        return sheet.strip()
+    if not names:
+        raise ValueError(f"{os.path.basename(file)} holds no table")
+    if sheet is None:
+        chosen = names[0]
+    else:
+        low = {n.lower(): n for n in names}
+        if sheet.strip().lower() in low:
+            chosen = low[sheet.strip().lower()]
+        elif sheet.strip().isdigit() and 1 <= int(sheet) <= len(names):
+            chosen = names[int(sheet) - 1]
+        else:
+            raise ValueError(f"no table {sheet!r} in {os.path.basename(file)}; its tables are "
+                             f"{', '.join(names)} (or give an SQL query: SELECT ...)")
+    return 'SELECT * FROM "' + chosen.replace('"', '""') + '"' 
 
 
 def is_excel(path: str) -> bool:
@@ -130,8 +181,11 @@ def _excel_engine(file: str) -> str:
 
 
 def list_sheets(path: str) -> list[str]:
-    """The sheet names of an Excel workbook ([] for a text table)."""
+    """The sheet names of an Excel workbook, the tables and views of an SQLite
+    database ([] for a text table)."""
     file, _ = split_sheet(path)
+    if is_sqlite(file):
+        return _sqlite_tables(file)
     if not is_excel(file):
         return []
     import pandas as pd
@@ -146,6 +200,15 @@ def read_table(path: str):
     the sheet are dropped (a sheet often has a blank margin)."""
     import pandas as pd
     file, sheet = split_sheet(path)
+    if is_sqlite(file):
+        # an SQLite database (user, 2026-11-18: "I very often use SQLite DBs"), read only
+        import sqlite3
+        con = sqlite3.connect(f"file:{file}?mode=ro", uri=True)
+        try:
+            df = pd.read_sql_query(_sqlite_query(file, sheet), con)
+        finally:
+            con.close()
+        return _numbers_from_text(df, decimal_comma=False)
     if not is_excel(file):
         with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
             sep, decimal = csv_format(f.read(4096))
@@ -981,6 +1044,13 @@ def _loading_code(path: str) -> list[str]:
     decimal mark of a text table, or an Excel sheet without its blank margin and with
     numbers typed as text read as numbers."""
     file, sheet = split_sheet(path)
+    if is_sqlite(file):
+        return ["# the table: from the SQLite database, as staplot reads it",
+                "import sqlite3",
+                f"con = sqlite3.connect(r{('file:' + file + '?mode=ro')!r}, uri=True)",
+                f"df = pd.read_sql_query({_sqlite_query(file, sheet)!r}, con)",
+                "con.close()",
+                ""]
     if not is_excel(file):
         with open(file, encoding="utf-8-sig", errors="replace", newline="") as f:
             sep, decimal = csv_format(f.read(4096))
