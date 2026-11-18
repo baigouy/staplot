@@ -58,7 +58,7 @@ __all__ = [
     "PLOT_KINDS",
 ]
 
-PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired")
+PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired", "line")
 VIOLIN_SIDES = ("both", "left", "right")
 # the parts of a plot whose colour can be set (element_colors); the groups' own colours
 # are *colors*
@@ -514,7 +514,7 @@ def grouped_table_from_csv(path: str, name: str | None = None, columns=None,
 
     def numeric_share(col):
         # a factor coded by a few numbers (day 7 / 14, a 0 / 1 code) is a factor too
-        if df[col].dropna().nunique() <= 12:
+        if df[col].dropna().nunique() <= min(12, len(df) / 2):      # levels that repeat
             return 0.0
         return pd.to_numeric(df[col], errors="coerce").notna().mean()
     # a wide table (one column per condition) read as long gives a nonsense
@@ -1227,6 +1227,17 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
                                   colors=colors)
         if annotate:
             stats_record = correlation_test(table)
+    elif kind == "line":
+        if isinstance(table, DataTable):
+            raise ValueError("a line plot (time course) needs a two-factor table: group, x (day, dose, "
+                             "time), value; e.g. columns=['genotype', 'day', 'length']")
+        names = getattr(table, "factor_names", None)
+        fig = _plots.plot_lines(table, error_type=error, show_points=show_points, title=title, ylabel=ylabel,
+                                xlabel=xlabel or (names[1] if names else ""), colors=colors)
+        if annotate:
+            stats_record = two_way_test(table)
+            if "error" not in stats_record:
+                _annotate_two_way(fig, stats_record, names, ax=facet_ax)
     elif kind == "split_violin":
         x_levels, halves, arrays = split_parts(table, order=order)
         pair_p, pairs = None, None
@@ -1305,7 +1316,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
                   log_y=log_y, xtick_rotation=xtick_rotation, legend=legend)
     if element_colors:
         apply_element_colors(fig, element_colors)
-    if kind in ("grouped", "split_violin") and annotate and stats_record and "error" not in stats_record:
+    if kind in ("grouped", "split_violin", "line") and annotate and stats_record and "error" not in stats_record:
         # room for the ANOVA line under the axis labels (they ran into each other)
         lines = getattr(fig, "_staplot_note_lines", 1)
         fig.tight_layout(rect=(0, min(0.4, 0.012 + 0.026 * lines * 4 / max(fig.get_size_inches()[1], 1)), 1, 1))
@@ -1337,7 +1348,7 @@ def facet_tables(path: str, kind: str, facet: str, facet_row: str | None = None,
     (and of *facet_row*), "day = 7" ..."""
     col, levels = facet_levels(path, facet, where, skip_rows)
     row_col, row_levels = (facet_levels(path, facet_row, where, skip_rows) if facet_row else (None, [None]))
-    two = kind in ("grouped", "split_violin")
+    two = kind in ("grouped", "split_violin", "line")
     if columns is None:
         columns = [str(c) for c in read_table(path, skip_rows).columns if str(c) not in (col, row_col)]
     out = []
@@ -1373,7 +1384,7 @@ def facet_stats(path: str, kind: str, facet: str, facet_row: str | None = None, 
                                    control=control)
         elif kind == "paired":
             out[label] = paired_test(table, only_significant=only_significant, parametric=parametric)
-        elif kind in ("grouped", "split_violin"):
+        elif kind in ("grouped", "split_violin", "line"):
             rec = two_way_test(table)
             if kind == "split_violin" and "error" not in rec:
                 try:
@@ -1713,7 +1724,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
             "for facet, rec in stats_record['facets'].items():",
             "    print(facet, rec.get('test'), [(c['a'], c['b'], c['p']) for c in rec.get('comparisons') or []])",
             ""])
-    builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin") else "table_from_csv"
+    builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin", "line") else "table_from_csv"
     out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
            "# Part 1 redraws the figure; part 2 runs the statistics without staplot.",
@@ -1731,7 +1742,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     if not annotate:
         return "\n".join(out)
     out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
-    if kind in ("grouped", "split_violin"):
+    if kind in ("grouped", "split_violin", "line"):
         out += _grouped_code(path, columns, where, skip_rows)
         if kind == "split_violin":
             out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns,

@@ -349,3 +349,23 @@ def test_swarm_points_never_overlap(tidy):
     assert np.ptp(xs) < 1e-9
     with pytest.raises(ValueError, match="point_style"):
         api.plot(t, "box", point_style="dots")
+
+
+def test_a_time_course_line_per_group(tmp_path):
+    """"plot the growth over the days per genotype": mean ± error lines, x from the levels."""
+    rng = np.random.default_rng(8)
+    rows = [(g, f"day {d}", 10 + 2 * d + ge + rng.normal(0, 1)) for g, ge in (("WT", 0), ("mut", -3))
+            for d in (1, 3, 7) for _ in range(6)]
+    path = tmp_path / "growth.csv"
+    pd.DataFrame(rows, columns=["genotype", "day", "length"]).to_csv(path, index=False)
+    gt = api.grouped_table_from_csv(str(path))
+    fig, rec = api.plot(gt, "line", error="sem")
+    ax = fig.axes[0]
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["day 1", "day 3", "day 7"]
+    assert list(ax.get_xticks()) == [1.0, 3.0, 7.0]                     # spaced as the days
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["WT", "mut"]
+    assert rec["test"] == "Two-way ANOVA" and ax.get_xlabel() == "day"
+    with pytest.raises(ValueError, match="two-factor"):
+        api.plot(api.table_from_csv(str(path), columns=["genotype", "length"]), "line")
+    code = api.plot_code(str(path), "line")
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
