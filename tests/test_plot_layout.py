@@ -369,3 +369,14 @@ def test_a_time_course_line_per_group(tmp_path):
         api.plot(api.table_from_csv(str(path), columns=["genotype", "length"]), "line")
     code = api.plot_code(str(path), "line")
     exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+
+
+def test_values_as_a_percentage_of_the_control(csv):
+    t = api.table_from_csv(csv)
+    fig, rec = api.plot(t, "bar", normalize="wt", control="WT")
+    assert fig.axes[0].get_ylabel() == "% of WT"
+    assert abs(rec["groups"]["WT"]["mean"] - 100.0) < 1e-9
+    assert api.plot(t, "bar", normalize="WT", ylabel="Relative area")[0].axes[0].get_ylabel() == "Relative area"
+    with pytest.raises(ValueError, match="no group"):
+        api.plot(t, "bar", normalize="KO")
+    assert "normalize='WT'" in api.plot_code(csv, "bar", normalize="WT")

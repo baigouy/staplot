@@ -988,7 +988,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_ylabel: bool = True, show_xlabel: bool = True, rename: dict | None = None,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
-         p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter"):
+         p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter",
+         normalize: str | None = None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -1046,7 +1047,15 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     against it): bar, box, violin.
     *point_style*: "jitter" (default: spread at random), "swarm" (side by side, never
     overlapping: a beeswarm) or "line" (in one column).
+    *normalize*: a group's name: every value as a percentage of that group's mean ("% of
+    WT"; the control then sits at 100), the statistics on these values (bar, box,
+    violin, paired). The y label says so unless one is given.
     """
+    if normalize:
+        if not isinstance(table, DataTable):
+            raise ValueError("normalize applies to bar, box, violin and paired plots (one factor)")
+        table, norm_label = normalized(table, normalize)
+        ylabel = ylabel or norm_label
     extras = {"show_n": show_n, "show_mean": show_mean, "p_format": p_format, "hlines": hlines,
               "point_style": point_style}
     if ax is not None:
@@ -1182,6 +1191,25 @@ def _details(result, table, kind, ax=None, element_colors=None, *, show_n=False,
     if ax is None and (show_n or p_format == "p"):
         fig.tight_layout()
     return fig, rec
+
+
+def normalized(table: DataTable, to: str):
+    """(a copy of *table* with every value as a % of group *to*'s mean, the label "% of
+    <to>"); the group named in any case."""
+    import copy
+    names = [c.name for c in table.columns]
+    low = {str(n).lower(): n for n in names}
+    if str(to).lower() not in low:
+        raise ValueError(f"no group {to!r} to normalise to; the groups are {', '.join(map(str, names))}")
+    ref = low[str(to).lower()]
+    base = float(np.mean(table.get_column(ref).valid_values()))
+    if not np.isfinite(base) or base == 0:
+        raise ValueError(f"the mean of {ref} is {base}: cannot normalise to it")
+    out = copy.deepcopy(table)
+    for col in out.columns:
+        nums = [col._num(v) for v in col.values]
+        col.values = [100.0 * x / base if np.isfinite(x) else None for x in nums]
+    return out, f"% of {ref}"
 
 
 def _colors_by_name(table, kind, colors: dict, rename=None) -> list:
@@ -1729,7 +1757,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
               show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
-              control: str | None = None, point_style: str = "jitter") -> str:
+              control: str | None = None, point_style: str = "jitter", normalize: str | None = None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1763,7 +1791,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("element_colors", dict(element_colors) if element_colors else None, None),
                                  ("show_n", show_n, False), ("show_mean", show_mean, False),
                                  ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None),
-                                 ("control", control, None), ("point_style", point_style, "jitter")):
+                                 ("control", control, None), ("point_style", point_style, "jitter"),
+                                 ("normalize", normalize, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
