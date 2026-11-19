@@ -389,3 +389,11 @@ def test_brackets_for_chosen_pairs_only(csv):
     assert len(rec["comparisons"]) == 3                       # the whole test is kept
     with pytest.raises(ValueError, match="no comparison"):
         api.plot(t, "box", pairs=[["WT", "KO"]])
+
+
+def test_the_code_of_a_faceted_plot_reruns_each_facet(tidy):
+    code = api.plot_code(tidy, "box", facet="treatment", columns=["genotype", "area"])
+    assert code.count("# ===== facet treatment = ") == 2 and "query(" in code
+    exec(compile(code.replace('fig.savefig("plot.pdf")', ""), "c", "exec"), {})
+    code = api.plot_code(tidy, "bar", columns=["genotype", "area"], normalize="WT", pairs=[["WT", "mutA"]])
+    assert "% of WT" in code and "Brackets drawn only for" in code

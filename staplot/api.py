@@ -1454,6 +1454,15 @@ def facet_levels(path: str, facet: str, where=None, skip_rows=None) -> tuple[str
     return str(col), levels
 
 
+def _typed_level(path, column, text, skip_rows=None):
+    """A facet's level as the table holds it (7, not "7"), for the query in the code."""
+    df = read_table(path, skip_rows)
+    for v in df[column].dropna().unique():
+        if str(v) == str(text) or str(v).strip() == str(text).strip():
+            return v.item() if hasattr(v, "item") else v
+    return text
+
+
 def facet_tables(path: str, kind: str, facet: str, facet_row: str | None = None, *, columns=None,
                  where=None, skip_rows=None):
     """[(label, table or None, error)] of a faceted plot: one table per value of *facet*
@@ -1827,18 +1836,39 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                             ("skip_rows", None if skip_rows in (None, "auto") else int(skip_rows))):
             if value is not None:
                 fargs.append(f"{name}={value!r}")
-        return "\n".join([
+        out = [
             f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
             + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
             "# One plot per value of " + repr(facet) + (f" and of {facet_row!r}" if facet_row else "")
-            + "; each facet's statistics are in stats_record['facets'].",
+            + "; part 1 redraws the figure, part 2 reruns each facet's statistics without staplot.",
+            "",
+            "# --- 1. the figure " + "-" * 60,
             "from staplot import api",
             "",
             f"fig, stats_record = api.plot_facets(r{str(path)!r}, " + ", ".join(fargs) + ")",
             'fig.savefig("plot.pdf")             # vector; or .png / .svg',
             "for facet, rec in stats_record['facets'].items():",
             "    print(facet, rec.get('test'), [(c['a'], c['b'], c['p']) for c in rec.get('comparisons') or []])",
-            ""])
+            ""]
+        if annotate:
+            # each facet: its rows, then the same test as an unfaceted plot of them
+            col, _lv = facet_levels(path, facet, where, skip_rows)
+            row_col = facet_levels(path, facet_row, where, skip_rows)[0] if facet_row else None
+            cols = columns or [str(c) for c in read_table(path, skip_rows).columns if str(c) not in (col, row_col)]
+            for label, table, err in facet_tables(path, kind, facet, facet_row, columns=cols, where=where,
+                                                  skip_rows=skip_rows):
+                parts = [p.split(" = ", 1) for p in label.split(" | ")]
+                cond = " and ".join(f"`{c}` == {_typed_level(path, c, v, skip_rows)!r}" for c, v in parts)
+                sub = f"({where}) and {cond}" if where else cond
+                out += ["", f"# ===== facet {label} " + "=" * 50]
+                if table is None:
+                    out.append(f"# no data: {err}")
+                    continue
+                one = plot_code(path, kind, error=error, annotate=True, only_significant=only_significant,
+                                stats_mode=stats_mode, columns=cols, where=sub, skip_rows=skip_rows,
+                                control=control, order=order)
+                out += one[one.index("# --- 2."):].splitlines()
+        return "\n".join(out)
     builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin", "line") else "table_from_csv"
     out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
@@ -1857,6 +1887,12 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
     if not annotate:
         return "\n".join(out)
     out += ["# --- 2. the statistics with scipy / statsmodels alone " + "-" * 24]
+    if normalize:
+        out += [f"# The plot shows every value as a % of {normalize}'s mean; scaling every value by one",
+                "# constant changes none of these tests, so they run on the values of the table."]
+    if pairs:
+        out += [f"# Brackets drawn only for {[list(p) for p in pairs]}; the p-values are those of the whole",
+                "# test below (every pair compared, the correction over all of them)."]
     if kind in ("grouped", "split_violin", "line"):
         out += _grouped_code(path, columns, where, skip_rows)
         if kind == "split_violin":
