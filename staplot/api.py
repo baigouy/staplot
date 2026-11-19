@@ -131,7 +131,8 @@ def split_sheet(path: str) -> tuple[str, str | None]:
     path = str(path)
     if SHEET_SEP in path:
         file, sheet = path.split(SHEET_SEP, 1)
-        if file.lower().endswith(EXCEL_EXTENSIONS + SQLITE_EXTENSIONS) or _sqlite_header(file):
+        if (file.lower().endswith(EXCEL_EXTENSIONS + SQLITE_EXTENSIONS) or _sqlite_header(file)
+                or _excel_header(file)):
             return file, (sheet or None)
     return path, None
 
@@ -143,6 +144,45 @@ def _sqlite_header(file: str) -> bool:
             return f.read(16) == b"SQLite format 3\x00"
     except (OSError, ValueError):
         return False
+
+
+def _excel_header(file: str) -> str:
+    """"xlsx" or "xls" for a workbook recognised by its content, whatever its name
+    (macOS files often have no extension); "" otherwise."""
+    try:
+        with open(file, "rb") as f:
+            head = f.read(8)
+    except (OSError, ValueError, TypeError):
+        return ""
+    if head == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":            # OLE2: an old .xls (or an old .doc)
+        return "xls" if _ole_is_workbook(file) else ""
+    if head[:4] == b"PK\x03\x04":
+        import zipfile
+        try:
+            with zipfile.ZipFile(file) as z:
+                return "xlsx" if "xl/workbook.xml" in z.namelist() else ""
+        except (zipfile.BadZipFile, OSError):
+            return ""
+    return ""
+
+
+def _ole_is_workbook(file: str) -> bool:
+    try:
+        with open(file, "rb") as f:
+            data = f.read(1 << 20)
+    except OSError:
+        return False
+    return "Workbook".encode("utf-16-le") in data or "Book".encode("utf-16-le") in data
+
+
+def _excel_kind(file: str) -> str:
+    """"xls", "xlsx" (also .xlsm) or "" for a table file: by its extension, else by its content."""
+    low = file.lower()
+    if low.endswith(".xls"):
+        return "xls"
+    if low.endswith(EXCEL_EXTENSIONS):
+        return "xlsx"
+    return _excel_header(file)
 
 
 def is_sqlite(path: str) -> bool:
@@ -185,12 +225,12 @@ def _sqlite_query(file: str, sheet: str | None) -> str:
 
 
 def is_excel(path: str) -> bool:
-    return split_sheet(path)[0].lower().endswith(EXCEL_EXTENSIONS)
+    return bool(_excel_kind(split_sheet(path)[0]))
 
 
 def _excel_engine(file: str) -> str:
     """openpyxl for .xlsx/.xlsm, xlrd for the old .xls; a clear message when missing."""
-    old = file.lower().endswith(".xls")
+    old = _excel_kind(file) == "xls"
     module = "xlrd" if old else "openpyxl"
     try:
         __import__(module)
@@ -2154,7 +2194,7 @@ def _loading_code_all(path: str, skip_rows=None) -> list[str]:
                       "        df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce')"
                       ".where(lambda s: s.notna(), df[c])"]
         return lines + [""]
-    engine = "xlrd" if file.lower().endswith(".xls") else "openpyxl"
+    engine = "xlrd" if _excel_kind(file) == "xls" else "openpyxl"
     sheet_arg = (repr(int(sheet) - 1) if sheet and sheet.strip().isdigit() else repr(sheet)) if sheet else "0"
     out = ["# the table: the Excel sheet, as staplot reads it",
             f"raw = pd.read_excel(r{file!r}, sheet_name={sheet_arg}, header=None, engine={engine!r})"]
