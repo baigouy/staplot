@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staplot"
-version = "0.1.0"
+version = "0.1.1"
 description = "Statistical analysis and publication-quality plotting — a GraphPad Prism replacement"
 readme = "README.md"
 license = {text = "BSD-2-Clause"}
