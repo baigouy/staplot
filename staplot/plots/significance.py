@@ -17,6 +17,7 @@ def add_significance_brackets(
     use_stars: bool = True,
     color: str = "#222222",
     lw: float = 1.2,
+    positions: dict | None = None,
 ):
     """
     Draw significance brackets above a bar / box plot.
@@ -28,11 +29,14 @@ def add_significance_brackets(
     heights       : dict {name: y_top} — top of bar+error or whisker top
     y_step_frac   : gap between bracket levels as fraction of y-range
     tip_frac      : downward tick length as fraction of y-range
+    positions     : {name: x} when the groups are not at 0, 1, 2... (bars side by
+                    side within one x level of a grouped plot)
     """
     if not pairs:
         return
 
-    name_to_x = {n: float(i) for i, n in enumerate(group_names)}
+    name_to_x = ({n: float(positions[n]) for n in group_names} if positions
+                 else {n: float(i) for i, n in enumerate(group_names)})
     y_lo, y_hi = ax.get_ylim()
     y_range = y_hi - y_lo
     step = y_step_frac * y_range

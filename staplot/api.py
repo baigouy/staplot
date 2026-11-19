@@ -989,7 +989,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
          p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter",
-         normalize: str | None = None, pairs=None):
+         normalize: str | None = None, pairs=None, stats_text: bool = False):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -1052,6 +1052,9 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     violin, paired). The y label says so unless one is given.
     *pairs*: the brackets drawn, only for these pairs (``[["WT", "mutA"]]``); the p-values
     stay those of the whole test (Tukey / Dunn / Dunnett over every comparison).
+    *stats_text*: two-factor plots (grouped, split_violin, line): the two-way ANOVA
+    written under the axes as well. Off by default: the plot shows stars only (the
+    groups compared at each x level), the ANOVA goes in the stats record / legend text.
     """
     if normalize:
         if not isinstance(table, DataTable):
@@ -1067,7 +1070,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                              show_title=show_title, order=order, show_ylabel=show_ylabel,
                              show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                              violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax,
-                             control=control, pairs=pairs),
+                             control=control, pairs=pairs, stats_text=stats_text),
                 table, kind, ax, element_colors, **extras))
     return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                      stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
@@ -1076,7 +1079,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                      xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
                      show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                      violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors,
-                     control=control, pairs=pairs),
+                     control=control, pairs=pairs, stats_text=stats_text),
                      table, kind, None, element_colors, **extras))
 
 
@@ -1282,7 +1285,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
               log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
               show_xlabel: bool = True, rename=None, show_points: bool = True,
               violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
-              facet_ax=None, control=None, pairs=None):
+              facet_ax=None, control=None, pairs=None, stats_text=False):
     kind = kind.lower()
     if isinstance(colors, dict):
         colors = _colors_by_name(table, kind, colors, rename)
@@ -1348,7 +1351,11 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
                                 xlabel=xlabel or (names[1] if names else ""), colors=colors)
         if annotate:
             stats_record = two_way_test(table)
-            if "error" not in stats_record:
+            stats_record["within_x"] = within_x_tests(table, parametric=parametric,
+                                                      only_significant=only_significant)
+            _star_lines(facet_ax if facet_ax is not None else fig.axes[0], table, stats_record["within_x"],
+                        error, only_significant)
+            if stats_text and "error" not in stats_record:
                 _annotate_two_way(fig, stats_record, names, ax=facet_ax)
     elif kind == "split_violin":
         x_levels, halves, arrays = split_parts(table, order=order)
@@ -1369,7 +1376,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
         if annotate:
             stats_record = two_way_test(table)
             stats_record["split_comparisons"] = pairs
-            if "error" not in stats_record:
+            if stats_text and "error" not in stats_record:
                 _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
     elif kind == "grouped":
         fig = _plots.plot_grouped_bar(table, error_type=error, title=title,
@@ -1383,7 +1390,11 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
                 ax.set_xlabel(xlabel or names[1])
         if annotate:
             stats_record = two_way_test(table)
-            if "error" not in stats_record:
+            stats_record["within_x"] = within_x_tests(table, parametric=parametric,
+                                                      only_significant=only_significant)
+            _bracket_grouped(facet_ax if facet_ax is not None else fig.axes[0], table,
+                             stats_record["within_x"], error)
+            if stats_text and "error" not in stats_record:
                 _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
     if facet_ax is not None:
         # one facet: the figure's size, layout and colours are set once, by plot_facets
@@ -1581,11 +1592,11 @@ def plot_facets(path: str, kind: str = "box", facet: str = "", *, columns=None, 
     first = next((a for a in shown if a.get_legend() is not None), None)
     if first is not None:
         handles, labels = first.get_legend_handles_labels()
-        title = first.get_legend().get_title().get_text()
+        leg_title = first.get_legend().get_title().get_text()
         for a in shown:
             if a.get_legend() is not None:
                 a.get_legend().remove()
-        fig.legend(handles, labels, title=title or None, loc="upper center", ncol=max(1, len(labels)),
+        fig.legend(handles, labels, title=leg_title or None, loc="upper center", ncol=max(1, len(labels)),
                    frameon=False, fontsize=8, title_fontsize=8, bbox_to_anchor=(0.5, 1.0))
         top = 1 - 0.55 / fig.get_size_inches()[1]
     if layout.get("aspect"):
@@ -1675,6 +1686,92 @@ def split_parts(gtable, order=None):
             arrays[(x, h)] = [float(v) for v in gtable.data.get(cg, {}).get(rl, [])
                               if v is not None and np.isfinite(float(v))]
     return x_levels, halves, arrays
+
+
+def within_x_tests(gtable: GroupedDataTable, parametric=None, only_significant: bool = True) -> list[dict]:
+    """At each x level of a two-factor table (factor B: treatment, day...), the colour
+    groups (factor A: genotype...) compared as :func:`auto_test` compares the groups of
+    a bar plot: Welch t / Mann-Whitney for two, ANOVA + Tukey / Kruskal + Dunn for more,
+    the correction within that x level. What grouped bars and lines show as stars."""
+    out = []
+    for x in gtable.row_labels:
+        cols = {}
+        for g in gtable.col_groups:
+            vals = [v for v in gtable.data.get(g, {}).get(x, []) if v is not None and np.isfinite(float(v))]
+            if len(vals) >= 2:
+                cols[str(g)] = vals
+        rec = {"x": str(x), "test": None, "omnibus": None, "comparisons": [], "sig_pairs": []}
+        if len(cols) >= 2:
+            r = auto_test(table_from_columns(cols, name=str(x)), only_significant=only_significant,
+                          parametric=parametric)
+            rec.update(test=r.get("test"), omnibus=r.get("omnibus"), correction=r.get("correction"),
+                       comparisons=r.get("comparisons") or [], sig_pairs=r.get("sig_pairs") or [])
+            if r.get("warnings"):
+                rec["warnings"] = r["warnings"]
+        out.append(rec)
+    return out
+
+
+def _within_p(rec: dict):
+    """One p for an x level: the two-group test, or the omnibus of more groups."""
+    if rec.get("omnibus"):
+        return rec["omnibus"].get("p")
+    comps = rec.get("comparisons") or []
+    return comps[0]["p"] if len(comps) == 1 else None
+
+
+def _bracket_grouped(ax, gtable, within, error):
+    """Grouped bars: the significant pairs of each x level as brackets over its bars."""
+    from .plots.significance import add_significance_brackets
+    n_cg = len(gtable.col_groups)
+    bar_w = 0.8 / max(n_cg, 1)
+    for j, (x, rec) in enumerate(zip(gtable.row_labels, within)):
+        if not rec.get("sig_pairs"):
+            continue
+        keys, pos, tops = [], {}, {}
+        for i, g in enumerate(gtable.col_groups):
+            k = f"{x}\x1f{g}"
+            keys.append(k)
+            pos[k] = j + (i - n_cg / 2.0 + 0.5) * bar_w
+            arr = np.asarray([v for v in gtable.data.get(g, {}).get(x, [])
+                              if v is not None and np.isfinite(float(v))], float)
+            if arr.size:
+                sd = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+                tops[k] = max(float(arr.max()), float(arr.mean()) + (sd if error != "none" else 0.0))
+        pairs = [(f"{x}\x1f{a}", f"{x}\x1f{b}", p) for a, b, p in rec["sig_pairs"]]
+        add_significance_brackets(ax, keys, pairs, tops, positions=pos, fontsize=9, lw=1.0)
+
+
+def _star_lines(ax, gtable, within, error, only_significant=True):
+    """Lines: a star over each x level where the groups differ (the test of that level)."""
+    from .plots.lines import _as_number
+    from .stats.descriptive import significance_stars
+    xs = list(gtable.row_labels)
+    nums = [_as_number(x) for x in xs]
+    numeric = all(n is not None for n in nums)
+    order = sorted(range(len(xs)), key=lambda i: nums[i]) if numeric else list(range(len(xs)))
+    xpos = {xs[i]: (nums[i] if numeric else k) for k, i in enumerate(order)}
+    for x, rec in zip(xs, within):
+        p = _within_p(rec)
+        if p is None or not np.isfinite(p) or (only_significant and p >= 0.05):
+            continue
+        tops = []
+        for g in gtable.col_groups:
+            arr = np.asarray([v for v in gtable.data.get(g, {}).get(x, [])
+                              if v is not None and np.isfinite(float(v))], float)
+            if arr.size:
+                sem = float(np.std(arr, ddof=1) / np.sqrt(arr.size)) if arr.size > 1 else 0.0
+                sd = sem * np.sqrt(arr.size)
+                tops.append(float(arr.mean()) + {"sd": sd, "sem": sem, "none": 0.0}.get(error, 1.96 * sem))
+        if not tops:
+            continue
+        t = ax.annotate(significance_stars(p), xy=(xpos[x], max(tops)), xytext=(0, 3), textcoords="offset points",
+                        ha="center", va="bottom", fontsize=9, fontweight="bold", color="#222222",
+                        annotation_clip=False)
+        t._staplot_p = p
+        t._staplot_part = "brackets"
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, hi + 0.06 * (hi - lo))
 
 
 def split_pair_tests(x_levels, halves, arrays, parametric=None) -> list[dict]:
@@ -1789,7 +1886,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
               show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
               control: str | None = None, point_style: str = "jitter", normalize: str | None = None,
-              pairs=None) -> str:
+              pairs=None, stats_text: bool = False) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1825,7 +1922,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None),
                                  ("control", control, None), ("point_style", point_style, "jitter"),
                                  ("normalize", normalize, None),
-                                 ("pairs", [list(p) for p in pairs] if pairs else None, None)):
+                                 ("pairs", [list(p) for p in pairs] if pairs else None, None),
+                                 ("stats_text", stats_text, False)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
@@ -1898,6 +1996,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
         if kind == "split_violin":
             out += _split_code(path, order=order, parametric=_STATS_MODE.get(stats_mode), columns=columns,
                                where=where, skip_rows=skip_rows)
+        else:
+            out += _within_code(path, columns, where, skip_rows, only_significant, stats_mode, kind)
         return "\n".join(out)
     if kind == "paired":
         table = table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
@@ -2091,6 +2191,32 @@ def _grouped_code(path: str, columns=None, where=None, skip_rows=None) -> list[s
     lines += ["model = smf.ols('value ~ C(A) * C(B)', data=data).fit()",
               "print(anova_lm(model, typ=2))      # factor A, factor B and A x B rows"]
     return lines
+
+
+def _within_code(path, columns, where, skip_rows, only_significant, stats_mode, kind) -> list[str]:
+    """The stars of grouped bars / lines: at each x level, the colour groups compared
+    as a bar plot of that level's rows (its own code, rerun level by level)."""
+    gtable = grouped_table_from_csv(path, columns=columns, where=where, skip_rows=skip_rows)
+    df = select_columns(read_table(path, skip_rows), columns, where)
+    a_col, b_col, v_col = (str(c) for c in df.columns[:3])
+    names = getattr(gtable, "factor_names", None) or (a_col, b_col)
+    if str(names[0]) != a_col:                        # factor A (the colours) may be the 2nd column
+        a_col, b_col = b_col, a_col
+    out = ["", f"# The stars: at each {b_col} level, the {a_col} groups compared "
+               + ("(brackets over the bars)" if kind == "grouped" else "(a star over the x level: the test's p)")
+               + "; the correction is within each level."]
+    for x in gtable.row_labels:
+        cond = f"`{b_col}` == {_typed_level(path, b_col, x, skip_rows)!r}"
+        sub = f"({where}) and {cond}" if where else cond
+        try:
+            one = plot_code(path, "bar", annotate=True, only_significant=only_significant, stats_mode=stats_mode,
+                            columns=[a_col, v_col], where=sub, skip_rows=skip_rows)
+        except Exception as e:
+            out += [f"# ===== {b_col} = {x}: not tested ({e})"]
+            continue
+        out += ["", f"# ===== {b_col} = {x} " + "=" * 50]
+        out += one[one.index("\n", one.index("# --- 2.")) + 1:].splitlines()
+    return out
 
 
 def _split_code(path: str, order=None, parametric=None, columns=None, where=None,

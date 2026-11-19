@@ -169,7 +169,7 @@ def test_split_violins_by_sex_from_columns_of_a_tidy_table(tidy):
     """Split violins: one violin per genotype, female / male halves, a legend naming them,
     each pair tested, the ANOVA note naming the factors."""
     gt = api.grouped_table_from_csv(tidy, columns=["Genotype", "sex", "area"])
-    fig, rec = api.plot(gt, "split_violin", violin_inner="box")
+    fig, rec = api.plot(gt, "split_violin", violin_inner="box", stats_text=True)
     ax = fig.axes[0]
     assert [x.get_text() for x in ax.get_xticklabels()] == ["WT", "mutA", "mutB"]
     assert [x.get_text() for x in ax.get_legend().get_texts()] == ["female", "male"]
