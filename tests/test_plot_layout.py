@@ -380,3 +380,12 @@ def test_values_as_a_percentage_of_the_control(csv):
     with pytest.raises(ValueError, match="no group"):
         api.plot(t, "bar", normalize="KO")
     assert "normalize='WT'" in api.plot_code(csv, "bar", normalize="WT")
+
+
+def test_brackets_for_chosen_pairs_only(csv):
+    t = api.table_from_csv(csv)
+    fig, rec = api.plot(t, "box", pairs=[["muta", "WT"]], only_significant=False)
+    assert rec["shown_pairs"] == [["WT", "mutA"]]
+    assert len(rec["comparisons"]) == 3                       # the whole test is kept
+    with pytest.raises(ValueError, match="no comparison"):
+        api.plot(t, "box", pairs=[["WT", "KO"]])

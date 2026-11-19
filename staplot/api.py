@@ -989,7 +989,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
          p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter",
-         normalize: str | None = None):
+         normalize: str | None = None, pairs=None):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -1050,6 +1050,8 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     *normalize*: a group's name: every value as a percentage of that group's mean ("% of
     WT"; the control then sits at 100), the statistics on these values (bar, box,
     violin, paired). The y label says so unless one is given.
+    *pairs*: the brackets drawn, only for these pairs (``[["WT", "mutA"]]``); the p-values
+    stay those of the whole test (Tukey / Dunn / Dunnett over every comparison).
     """
     if normalize:
         if not isinstance(table, DataTable):
@@ -1065,7 +1067,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                              show_title=show_title, order=order, show_ylabel=show_ylabel,
                              show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                              violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax,
-                             control=control),
+                             control=control, pairs=pairs),
                 table, kind, ax, element_colors, **extras))
     return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                      stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
@@ -1074,7 +1076,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                      xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
                      show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                      violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors,
-                     control=control),
+                     control=control, pairs=pairs),
                      table, kind, None, element_colors, **extras))
 
 
@@ -1193,6 +1195,23 @@ def _details(result, table, kind, ax=None, element_colors=None, *, show_n=False,
     return fig, rec
 
 
+def _chosen_pairs(rec: dict, pairs, only_significant: bool) -> list:
+    """The brackets of the chosen *pairs* (names in any case, either order), with the
+    p-values of the whole test; unknown pairs raise."""
+    comps = {frozenset((str(c["a"]).lower(), str(c["b"]).lower())): c for c in rec.get("comparisons") or []}
+    out = []
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError('pairs: [["WT", "mutA"], ...], two group names each')
+        c = comps.get(frozenset((str(pair[0]).lower(), str(pair[1]).lower())))
+        if c is None:
+            raise ValueError(f"no comparison {list(pair)}; the tested pairs are "
+                             f"{[[x['a'], x['b']] for x in rec.get('comparisons') or []]}")
+        if np.isfinite(c["p"]) and (c["p"] < 0.05 or not only_significant):
+            out.append((c["a"], c["b"], c["p"]))
+    return out
+
+
 def normalized(table: DataTable, to: str):
     """(a copy of *table* with every value as a % of group *to*'s mean, the label "% of
     <to>"); the group named in any case."""
@@ -1263,7 +1282,7 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
               log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
               show_xlabel: bool = True, rename=None, show_points: bool = True,
               violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
-              facet_ax=None, control=None):
+              facet_ax=None, control=None, pairs=None):
     kind = kind.lower()
     if isinstance(colors, dict):
         colors = _colors_by_name(table, kind, colors, rename)
@@ -1286,6 +1305,9 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
         stats_record = auto_test(table, only_significant=only_significant,
                                  parametric=parametric, control=control)
         sig_pairs = stats_record["sig_pairs"] or None
+        if pairs:
+            sig_pairs = _chosen_pairs(stats_record, pairs, only_significant) or None
+            stats_record["shown_pairs"] = [[a, b] for a, b, _p in (sig_pairs or [])]
     if annotate and kind == "paired":
         stats_record = paired_test(table, only_significant=only_significant, parametric=parametric)
         sig_pairs = stats_record.get("sig_pairs") or None
@@ -1757,7 +1779,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               columns=None, where=None, skip_rows=None, element_colors: dict | None = None,
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
               show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
-              control: str | None = None, point_style: str = "jitter", normalize: str | None = None) -> str:
+              control: str | None = None, point_style: str = "jitter", normalize: str | None = None,
+              pairs=None) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1792,7 +1815,8 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("show_n", show_n, False), ("show_mean", show_mean, False),
                                  ("p_format", p_format, "stars"), ("hlines", list(hlines) if hlines else None, None),
                                  ("control", control, None), ("point_style", point_style, "jitter"),
-                                 ("normalize", normalize, None)):
+                                 ("normalize", normalize, None),
+                                 ("pairs", [list(p) for p in pairs] if pairs else None, None)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
