@@ -28,12 +28,14 @@ dependencies = [
 
 [project.optional-dependencies]
 excel = ["openpyxl", "xlrd"]
+icons = ["qtawesome"]
 
 [project.urls]
 Homepage = "https://github.com/baigouy/staplot"
 
 [project.scripts]
 staplot = "staplot.main:main"
+staplot-editor = "staplot.ui.plot_editor:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -46,3 +46,13 @@ def test_the_labels_grow_with_the_text_after_the_plot_was_made():
     labels, bars = _boxes(fig, ax)
     assert labels[0].y1 <= ax.get_window_extent(fig.canvas.get_renderer()).y1 + 1   # the axis grew to hold it
     plt.close(fig)
+
+
+def test_a_y_axis_top_the_user_set_stays_after_drawing(tmp_path):
+    """2026-11-20: ylim=[0, 30] read back 0-18.3 once drawn (the brackets set the top)."""
+    from staplot import api
+    p = tmp_path / "c.csv"
+    p.write_text("WT,KO\n10,15\n11,16\n9,14\n10.5,15.5\n")
+    fig, _rec = api.plot(api.table_from_csv(str(p)), kind="bar", ylim=[0, 30])
+    fig.canvas.draw()
+    assert tuple(fig.axes[0].get_ylim()) == (0, 30)

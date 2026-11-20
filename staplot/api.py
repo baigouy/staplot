@@ -1887,6 +1887,10 @@ def _apply_layout(fig, *, width=None, height=None, font_scale=None, ylim=None, l
             lo, hi = (list(ylim) + [None, None])[:2]
             cur_lo, cur_hi = ax.get_ylim()
             ax.set_ylim(cur_lo if lo is None else float(lo), cur_hi if hi is None else float(hi))
+            if hi is not None:
+                # the top the user asked for: the brackets re-stacked at each draw keep it
+                # (they set the top back to their own, 30 -> 18.3, 2026-11-20)
+                ax._staplot_fixed_top = float(hi)
         if xtick_rotation is not None:
             for t in ax.get_xticklabels():
                 angle = float(xtick_rotation) % 180

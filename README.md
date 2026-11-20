@@ -32,6 +32,20 @@ Desktop app:
 staplot
 ```
 
+Plot editor: a table beside its plot; click any part of the plot (a group, the
+points, the brackets, a title, an axis label, the tick labels, the legend, the plot
+area) to change its colour, text, size or font; edit the table's cells and the plot
+follows. Toolbar *Edit a plot* in the app, or:
+
+```
+python -m staplot.ui.plot_editor counts.csv box
+```
+
+From Python: `staplot.ui.plot_editor.PlotEditor(path, kind, kwargs)`; after OK,
+`kwargs()` / `changed_kwargs()` are `api.plot`'s arguments and `text_parts()` the size
+and font per part of the text. PyFigures opens it on a double-click on a data plot.
+Icons come from `qtawesome` when it is installed (optional).
+
 From Python (no GUI needed, safe to run headless):
 
 ```python

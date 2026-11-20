@@ -207,27 +207,47 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def _setup_toolbar(self):
+        from qtpy.QtCore import QSize
         tb = self.addToolBar("Main")
         tb.setMovable(False)
-        self._add_action(tb, "New Table", self.add_table)
-        self._add_action(tb, "Wizard",    self.open_test_wizard)
+        tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self._add_action(tb, "New Table", self.add_table, icon_name="fa5s.table")
+        self._add_action(tb, "Wizard",    self.open_test_wizard, icon_name="fa5s.magic")
+        self._add_action(tb, "Edit a plot", self.open_plot_editor, icon_name="fa5s.paint-brush")
         tb.addSeparator()
-        for label, pt in [
-            ("Bar",     "bar"),
-            ("B/A",     "before_after"),
-            ("Scatter", "scatter"),
-            ("Box",     "box"),
-            ("Violin",  "violin"),
-            ("Hist",    "histogram"),
-            ("Q-Q",     "qq"),
-            ("Heatmap", "heatmap"),
-            ("Grp Bar", "grouped_bar"),
-            ("Volcano", "volcano"),
+        for label, pt, ic in [
+            ("Bar",     "bar",          "fa5s.chart-bar"),
+            ("B/A",     "before_after", "fa5s.exchange-alt"),
+            ("Scatter", "scatter",      "mdi6.chart-scatter-plot"),
+            ("Box",     "box",          "mdi6.chart-box-outline"),
+            ("Violin",  "violin",       "mdi6.chart-bell-curve"),
+            ("Hist",    "histogram",    "mdi6.chart-histogram"),
+            ("Q-Q",     "qq",           "mdi6.chart-line-variant"),
+            ("Heatmap", "heatmap",      "mdi6.grid"),
+            ("Grp Bar", "grouped_bar",  "mdi6.chart-bar-stacked"),
+            ("Volcano", "volcano",      "mdi6.chart-scatter-plot-hexbin"),
         ]:
-            self._add_action(tb, label, lambda p=pt: self.new_graph(p))
+            self._add_action(tb, label, lambda p=pt: self.new_graph(p), icon_name=ic)
 
-    def _add_action(self, parent, label, slot, shortcut=None) -> QAction:
+    def open_plot_editor(self, path: str | None = None):
+        """A table (CSV, Excel, SQLite) beside its plot; click any part of the plot to
+        change it (plot_editor.PlotEditor, as PyFigures opens a data plot)."""
+        from .plot_editor import PlotEditor
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Table to plot", "",
+                                                  "Tables (*.csv *.tsv *.txt *.xlsx *.xls *.db *.sqlite);;All files (*)")
+        if not path:
+            return None
+        ed = PlotEditor(path, "bar", parent=self)
+        ed.exec()
+        return ed
+
+    def _add_action(self, parent, label, slot, shortcut=None, icon_name="") -> QAction:
         act = QAction(label, self)
+        if icon_name:
+            from .plot_editor import icon
+            act.setIcon(icon(icon_name))
         act.triggered.connect(slot)
         if shortcut:
             act.setShortcut(QKeySequence(shortcut))

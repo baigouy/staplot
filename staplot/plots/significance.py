@@ -165,6 +165,8 @@ class _BracketLayout(Artist):
         tops[id(self)] = need
         ax._staplot_bracket_tops = tops
         top = max([getattr(ax, "_staplot_top0", y_hi)] + list(tops.values()))
+        if getattr(ax, "_staplot_fixed_top", None) is not None:
+            top = ax._staplot_fixed_top          # a top the user set (ylim) stays
         if abs(top - y_hi) > 1e-6 * max(1.0, abs(y_range)):
             ax.set_ylim(top=top)
             return True                          # the scale changed: stack again
