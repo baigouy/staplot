@@ -34,8 +34,9 @@ try:
 except ImportError:                                    # PyQt5
     from qtpy.QtWidgets import QAction, QShortcut      # type: ignore[no-redef]
 
-PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired", "line")
-TWO_FACTOR_KINDS = ("grouped", "split_violin", "line")
+PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired", "line",
+              "stacked", "dose_response", "histogram", "heatmap")
+TWO_FACTOR_KINDS = ("grouped", "split_violin", "line", "stacked")
 ERRORS = ("sd", "sem", "ci95", "none")
 TEXT_PARTS = ("title", "axis_labels", "ticks", "legend")
 PART_NAMES = {"title": "titles", "axis_labels": "axis labels", "ticks": "tick labels",
@@ -364,6 +365,28 @@ class PlotEditor(QDialog):
         tb.addAction(self.save_data_act)
         self.reset_act = QAction(icon("fa5s.history"), "Back to the start", self, triggered=self.reset)
         tb.addAction(self.reset_act)
+        tb.addSeparator()
+        from qtpy.QtWidgets import QMenu, QToolButton
+        from staplot.plots.layers import LAYERS
+        self.layers_button = QToolButton(self)
+        self.layers_button.setText("Layers")
+        self.layers_button.setIcon(icon("fa5s.layer-group"))
+        self.layers_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.layers_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.layers_button)
+        self.layer_actions = {}
+        for name, what in LAYERS.items():
+            act = menu.addAction(what[0].upper() + what[1:])
+            act.setCheckable(True)
+            act.triggered.connect(lambda on, n=name: self._toggle_layer(n, on))
+            self.layer_actions[name] = act
+        self.layers_button.setMenu(menu)
+        self.layers_button.setToolTip("Several views of the same data: lines through the means / "
+                                      "medians, mean ± error over the groups")
+        tb.addWidget(self.layers_button)
+        self.y2_act = QAction(icon("fa5s.arrows-alt-v"), "Right axis…", self, triggered=self.edit_y2)
+        self.y2_act.setToolTip("A second measure on a right-hand y axis (two y axes are easily misread)")
+        tb.addAction(self.y2_act)
 
         split = QSplitter(Qt.Orientation.Horizontal, self)
         root.addWidget(split, 1)
@@ -417,6 +440,84 @@ class PlotEditor(QDialog):
         self.points_check.setChecked(self._kwargs.get("show_points", True) is not False)
         self.undo_act.setEnabled(self._pos > 0)
         self.redo_act.setEnabled(self._pos < len(self._history) - 1)
+        layers = self._kwargs.get("layers") or []
+        for name, act in self.layer_actions.items():
+            act.setChecked(name in layers)
+        self.layers_button.setEnabled(self._kind in ("bar", "box", "violin", "paired"))
+
+    def _toggle_layer(self, name, on):
+        layers = [l for l in (self._kwargs.get("layers") or []) if l != name] + ([name] if on else [])
+        self.set("layers", layers or None)
+
+    def edit_y2(self):
+        """A second measure on a right-hand axis: its table (this one by default), the
+        column of x (the plot's groups or x values) and of the values, how it is drawn."""
+        from staplot import api
+        from qtpy.QtWidgets import QFileDialog
+        spec = dict(self._kwargs.get("y2") or {})
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Right-hand axis")
+        form = QFormLayout(dlg)
+        note = QLabel("A second measure at the same x, on its own axis on the right. Two y axes are "
+                      "easily misread: keep them for two measures with different units.", dlg)
+        note.setWordWrap(True)
+        form.addRow(note)
+        path = QLineEdit(spec.get("csv") or self.path, dlg)
+        browse = QPushButton(icon("fa5s.folder-open"), "", dlg)
+        row = QWidget(dlg)
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(path, 1)
+        h.addWidget(browse)
+        form.addRow("Table:", row)
+        x_col, v_col = QComboBox(dlg), QComboBox(dlg)
+
+        def load_columns():
+            try:
+                cols = [str(c) for c in api.read_table(path.text().strip()).columns]
+            except Exception:
+                cols = []
+            for combo in (x_col, v_col):
+                combo.clear()
+                combo.addItems(cols)
+            given = spec.get("columns") or []
+            if len(given) == 2:
+                x_col.setCurrentText(str(given[0]))
+                v_col.setCurrentText(str(given[1]))
+            elif len(cols) > 1:
+                v_col.setCurrentIndex(1)
+        browse.clicked.connect(lambda: (path.setText(QFileDialog.getOpenFileName(dlg, "Table")[0] or path.text()),
+                                        load_columns()))
+        path.editingFinished.connect(load_columns)
+        load_columns()
+        form.addRow("x (the plot's groups / x values):", x_col)
+        form.addRow("Values:", v_col)
+        kind = QComboBox(dlg)
+        kind.addItems(["line", "points", "bar"])
+        kind.setCurrentText(spec.get("kind") or "line")
+        form.addRow("Drawn as:", kind)
+        label = QLineEdit(spec.get("label") or "", dlg)
+        label.setPlaceholderText("the values' column")
+        form.addRow("Axis label:", label)
+        color = ColorButton(spec.get("color") or "#c0392b", dlg)
+        form.addRow("Colour:", color)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dlg)
+        remove = box.addButton("No right axis", QDialogButtonBox.ButtonRole.DestructiveRole)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        removed = []
+        remove.clicked.connect(lambda: (removed.append(True), dlg.accept()))
+        form.addRow(box)
+        if not dlg.exec():
+            return
+        if removed:
+            self.set("y2", None)
+            return
+        new = {"csv": path.text().strip() or self.path, "columns": [x_col.currentText(), v_col.currentText()],
+               "kind": kind.currentText(), "color": color.color}
+        if label.text().strip():
+            new["label"] = label.text().strip()
+        self.set("y2", new)
 
     def _set_kind(self, kind):
         def fn():
@@ -672,7 +773,14 @@ class PlotEditor(QDialog):
         # an axis label's .axes is not always set: its axes is the one owning it
         ax = next((a for a in self.fig.axes if t is not None and (
             t in (a.xaxis.label, a.yaxis.label, a.title) or t in a.get_xticklabels())), None)
-        if t is not None and ax is not None and t is ax.yaxis.label:
+        if t is not None and ax is not None and getattr(ax, "_staplot_y2", False):
+            y2 = dict(self._kwargs.get("y2") or {})
+            self._line_row("Right axis label:", y2.get("label") or t.get_text(),
+                           lambda v: self.set("y2", {**y2, "label": v}))
+            b = QPushButton(icon("fa5s.arrows-alt-v"), "Right axis…", self)
+            b.clicked.connect(self.edit_y2)
+            self.inspector_form.addRow("", b)
+        elif t is not None and ax is not None and t is ax.yaxis.label:
             self._line_row("Y-axis label:", self._kwargs.get("ylabel") or t.get_text(),
                            lambda v: self.set("ylabel", v))
             show = QCheckBox("Show it", self)
@@ -784,6 +892,15 @@ class PlotEditor(QDialog):
     def _inspect_element(self, element, artist):
         from staplot import api
         self._title_row(f"{element.replace('_', ' ').capitalize()}: {api.PLOT_ELEMENTS.get(element, '')}")
+        if element == "y2":
+            # the right-hand axis keeps its colour in its own settings
+            y2 = dict(self._kwargs.get("y2") or {})
+            self._color_row("Colour:", y2.get("color") or "#c0392b",
+                            lambda c: self.set("y2", {**y2, "color": c}))
+            b = QPushButton(icon("fa5s.arrows-alt-v"), "Right axis…", self)
+            b.clicked.connect(self.edit_y2)
+            self.inspector_form.addRow("", b)
+            return
         self._element_color_row(element, "Colour:", allow_none=element in ("edges", "points"))
         if element == "points":
             combo = QComboBox(self)
@@ -824,6 +941,41 @@ class PlotEditor(QDialog):
         self.inspector_form.addRow("", log)
         self._element_color_row("background", "Background:")
         self._element_color_row("axes", "Axes, ticks, labels:")
+        brk = list(self._kwargs.get("ybreak") or [None, None])
+        self._line_row("Break the y axis from:", "" if brk[0] is None else str(brk[0]),
+                       lambda v: self._set_break(num(v), 0), "no break")
+        self._line_row("…up to:", "" if brk[1] is None else str(brk[1]),
+                       lambda v: self._set_break(num(v), 1), "no break")
+        step = QDoubleSpinBox(self)
+        step.setRange(0, 1e9)
+        step.setDecimals(3)
+        step.setSpecialValueText("automatic")
+        step.setValue(float(self._kwargs.get("y_step") or 0))
+        step.editingFinished.connect(lambda: self.set("y_step", step.value() or None))
+        self.inspector_form.addRow("Y tick every:", step)
+        fmt = QComboBox(self)
+        fmt.setEditable(True)
+        fmt.addItems(["automatic", "plain", "sci", "percent", "{:.1f}", "{:.2f}"])
+        fmt.setCurrentText(self._kwargs.get("y_format") or "automatic")
+        fmt.activated.connect(lambda _i: self.set("y_format", None if fmt.currentText() == "automatic"
+                                                  else fmt.currentText()))
+        self.inspector_form.addRow("Y numbers:", fmt)
+        side = QComboBox(self)
+        side.addItems(["both", "up", "down"])
+        side.setCurrentText(self._kwargs.get("error_side") or "both")
+        side.activated.connect(lambda _i: self.set("error_side", None if side.currentText() == "both"
+                                                   else side.currentText()))
+        self.inspector_form.addRow("Error bars:", side)
+        for key, text in (("invert_y", "Y axis upside down"), ("invert_x", "X axis right to left")):
+            box = QCheckBox(text, self)
+            box.setChecked(bool(self._kwargs.get(key)))
+            box.clicked.connect(lambda on, k=key: self.set(k, True if on else None))
+            self.inspector_form.addRow("", box)
+
+    def _set_break(self, value, i):
+        brk = list(self._kwargs.get("ybreak") or [None, None])
+        brk[i] = value
+        self.set("ybreak", None if None in brk else brk)
 
     def _set_ylim(self, value, i):
         lim = list(self._kwargs.get("ylim") or [None, None])

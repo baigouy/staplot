@@ -56,9 +56,11 @@ def plot_lines(
                 span = (max(xpos) - min(xpos)) if len(xpos) > 1 else 1.0
                 pts = ax.scatter(np.full(arr.size, xpos[k]) + rng.uniform(-0.015, 0.015, arr.size) * span, arr,
                                  color=color, s=8, alpha=0.4, linewidths=0, zorder=2, gid="points")
-        ax.errorbar(used, means, yerr=errs if error_type != "none" else None, color=color,
-                    marker=styles.marker(g_i), markersize=5, linewidth=1.4, capsize=3, label=str(g),
-                    zorder=3, markeredgecolor="white", markeredgewidth=0.5)
+        eb = ax.errorbar(used, means, yerr=errs if error_type != "none" else None, color=color,
+                         marker=styles.marker(g_i), markersize=5, linewidth=1.4, capsize=3, label=str(g),
+                         zorder=3, markeredgecolor="white", markeredgewidth=0.5)
+        for part in [*eb.lines[1], *eb.lines[2]]:
+            part.set_gid("error_bars")           # one-sided error bars find them
     if not numeric or len(xpos) <= 12:
         # the levels themselves on the axis ("day 1", "day 2"), at their place
         ax.set_xticks(xpos)

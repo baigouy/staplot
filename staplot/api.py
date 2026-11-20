@@ -58,7 +58,10 @@ __all__ = [
     "PLOT_KINDS",
 ]
 
-PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired", "line")
+PLOT_KINDS = ("bar", "box", "violin", "scatter", "grouped", "split_violin", "paired", "line",
+              "stacked", "dose_response", "histogram", "heatmap")
+# the kinds drawn from a two-factor table (factor A, factor B, value)
+TWO_FACTOR_KINDS = ("grouped", "split_violin", "line", "stacked")
 VIOLIN_SIDES = ("both", "left", "right")
 # the parts of a plot whose colour can be set (element_colors); the groups' own colours
 # are *colors*
@@ -77,6 +80,9 @@ PLOT_ELEMENTS = {
     "mean": "the mean marker (show_mean)",
     "pair_lines": "the lines joining each subject's values (paired)",
     "reference": "the reference lines (hlines)",
+    "layers": "the extra layers (mean / median lines, mean ± error: layers)",
+    "y2": "the measure on the right-hand axis (y2)",
+    "subject_means": "each subject's mean (subject=: several values per animal / embryo)",
 }
 _PART_TAGS = set(PLOT_ELEMENTS) | {"bar", "box", "violin"}
 
@@ -531,7 +537,7 @@ def csv_cleaning_report(path: str, layout: str = "auto", columns=None, where=Non
 
 
 def table_from_csv(path: str, layout: str = "auto", name: str | None = None, columns=None,
-                   where=None, skip_rows=None) -> DataTable:
+                   where=None, skip_rows=None, subject: str | None = None) -> DataTable:
     """Build a column DataTable from a CSV.
 
     *columns*: the columns used, of a wider table (e.g. ["genotype", "area"]: long
@@ -546,6 +552,8 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
         non-numeric; wide otherwise.
     """
     import pandas as pd
+    if subject:
+        return _table_with_subjects(path, columns, where, skip_rows, subject, name)
     df = _read_csv(path, columns, where, skip_rows)
     nm = name or os.path.splitext(os.path.basename(str(path)))[0]
     if df.shape[1] == 0:
@@ -572,6 +580,29 @@ def table_from_csv(path: str, layout: str = "auto", name: str | None = None, col
     for c in df.columns:
         columns[str(c)] = pd.to_numeric(df[c], errors="coerce").tolist()
     return table_from_columns(columns, name=nm)
+
+
+def _table_with_subjects(path, columns, where, skip_rows, subject, name=None):
+    """A long table (group, value) whose values belong to subjects (*subject*: the column
+    naming the animal / embryo / experiment): each column keeps its values' subjects."""
+    import pandas as pd
+    if not columns or len(columns) != 2:
+        raise ValueError("subject= needs columns=[group, value] (and the subject column named by subject)")
+    df = _read_csv(path, list(columns) + [subject], where, skip_rows)
+    gcol, vcol, scol = df.columns[0], df.columns[1], df.columns[2]
+    vals = pd.to_numeric(df[vcol], errors="coerce")
+    groups: dict = {}
+    subs: dict = {}
+    for g, v, sub in zip(df[gcol], vals, df[scol]):
+        if not _has_label(g):
+            continue
+        groups.setdefault(str(g).strip(), []).append(v)
+        subs.setdefault(str(g).strip(), []).append(None if not _has_label(sub) else str(sub).strip())
+    t = table_from_columns(groups, name=name or os.path.splitext(os.path.basename(str(path)))[0])
+    for col in t.columns:
+        col.subjects = subs[col.name]
+    t.value_name, t.group_name, t.subject_name = str(vcol), str(gcol), str(scol)
+    return t
 
 
 def grouped_table_from_csv(path: str, name: str | None = None, columns=None,
@@ -1029,7 +1060,11 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
          show_points: bool = True, violin_inner: str = "lines", violin_side: str = "both",
          element_colors: dict | None = None, ax=None, show_n: bool = False, show_mean: bool = False,
          p_format: str = "stars", hlines=None, control: str | None = None, point_style: str = "jitter",
-         normalize: str | None = None, pairs=None, stats_text: bool = False):
+         normalize: str | None = None, pairs=None, stats_text: bool = False,
+         layers=None, y2: dict | None = None, invert_y: bool = False, invert_x: bool = False,
+         ybreak=None, y_step: float | None = None, y_format: str | None = None, log_base: float | None = None,
+         error_side: str = "both", percent: bool = False, bins=None, cmap: str | None = None,
+         log_x: bool = True):
     """Render *table* to a matplotlib Figure and return ``(fig, stats_record)``.
 
     *kind*: ``"bar"`` | ``"box"`` | ``"violin"`` | ``"scatter"`` | ``"grouped"`` |
@@ -1095,7 +1130,175 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     *stats_text*: two-factor plots (grouped, split_violin, line): the two-way ANOVA
     written under the axes as well. Off by default: the plot shows stars only (the
     groups compared at each x level), the ANOVA goes in the stats record / legend text.
+    *layers*: more over the groups of a bar / box / violin / paired plot (several views of
+    the same data): ``["mean_line"]`` joins the means, ``"median_line"`` the medians,
+    ``"mean_error"`` adds mean ± error (:data:`plots.layers.LAYERS`).
+    *y2*: another measure on a right-hand axis, at the same x (group names or the x
+    values of a line plot): ``{"csv": path, "columns": [x, value], "kind": "line" |
+    "points" | "bar", "label": ..., "color": ..., "error": ..., "ylim": ..., "log": ...}``;
+    ``columns`` of one per x level work too. Two y axes are easily misread: use them
+    only for two measures with different units.
+    *invert_y* / *invert_x*: the axis upside down / right to left (depth, rank, a
+    scale read downwards); the right-hand axis (y2) keeps its own direction.
+    *ybreak*: ``[low, high]``: the y axis broken between these values (one tall group no
+    longer flattens the others): two stacked axes, the part above *high* small.
+    *y_step*: the distance between y ticks; *y_format*: ``"plain"``, ``"sci"`` (×10ⁿ),
+    ``"percent"`` or a format (``"{:.1f}"``); *log_base*: 2, 10, e (with or sets a log axis).
+    *error_side*: ``"up"`` / ``"down"``: only the upper / lower half of each error bar.
+    Kinds: *stacked* (two-factor table: one bar per x level stacked by the other factor,
+    the sum of each cell; *percent* = each bar as 100 %; chi-square / Fisher test of the
+    counts); *dose_response* (first column the dose, then one column per response; mean ±
+    error per dose and a 4-parameter logistic fit with its EC50; *log_x* log dose axis);
+    *histogram* (one per column; *bins*); *heatmap* (the table's values; *cmap*).
     """
+    if ybreak:
+        return _plot_broken(table, kind, ybreak, dict(
+            error=error, annotate=annotate, only_significant=only_significant, stats_mode=stats_mode,
+            title=title, ylabel=ylabel, xlabel=xlabel, colors=colors, show_title=show_title, order=order,
+            show_ylabel=show_ylabel, show_xlabel=show_xlabel, rename=rename, show_points=show_points,
+            violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors,
+            show_n=show_n, show_mean=show_mean, p_format=p_format, hlines=hlines, control=control,
+            point_style=point_style, normalize=normalize, pairs=pairs, stats_text=stats_text, layers=layers,
+            error_side=error_side, y_step=y_step, y_format=y_format, percent=percent),
+            dict(aspect=aspect, width=width, height=height, font_scale=font_scale,
+                 xtick_rotation=xtick_rotation, legend=legend), ax=ax)
+    result = _plot_no_extras(table, kind, error=error, annotate=annotate, only_significant=only_significant,
+                             stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
+                             show_title=show_title, aspect=aspect, width=width, height=height,
+                             font_scale=font_scale, order=order, ylim=ylim, log_y=log_y,
+                             xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
+                             show_xlabel=show_xlabel, rename=rename, show_points=show_points,
+                             violin_inner=violin_inner, violin_side=violin_side,
+                             element_colors=element_colors, ax=ax, show_n=show_n, show_mean=show_mean,
+                             p_format=p_format, hlines=hlines, control=control, point_style=point_style,
+                             normalize=normalize, pairs=pairs, stats_text=stats_text,
+                             kind_options={"percent": percent, "bins": bins, "cmap": cmap, "log_x": log_x})
+    if layers or y2:
+        result = _with_extras(result, table, kind, ax, layers, y2, error, element_colors, order, normalize, rename)
+    from .plots.extras import one_sided_errors, set_y_ticks
+    one_sided_errors(result[0], error_side)
+    if y_step or y_format or log_base:
+        set_y_ticks(ax if ax is not None else result[0].axes[0], y_step, y_format, log_base)
+    if invert_y or invert_x:
+        main = ax if ax is not None else result[0].axes[0]
+        if invert_y and not main.yaxis_inverted():
+            main.invert_yaxis()
+        if invert_x and not main.xaxis_inverted():
+            main.invert_xaxis()
+    return result
+
+
+def _plot_broken(table, kind, ybreak, kwargs, layout, ax=None):
+    """:func:`plot` with its y axis broken between ybreak = [low, high]: the plot drawn
+    twice, in a small upper axes (above *high*) and the main one (below *low*)."""
+    import matplotlib.pyplot as plt
+    from .plots.extras import broken_axes_marks
+    if ax is not None:
+        raise ValueError("ybreak is for a single plot, not facets")
+    try:
+        low, high = (float(v) for v in ybreak)
+    except (TypeError, ValueError):
+        raise ValueError("ybreak is [low, high]: the y axis jumps from low to high") from None
+    if not low < high:
+        raise ValueError("ybreak: low must be below high")
+    if kind not in ("bar", "box", "violin", "paired", "grouped", "line", "scatter", "stacked"):
+        raise ValueError(f"ybreak does not apply to a {kind} plot")
+    fig, (top, bottom) = plt.subplots(2, 1, sharex=True, figsize=(3.6, 3.4),
+                                      gridspec_kw={"height_ratios": [1, 2.6], "hspace": 0.06})
+    title, ylabel = kwargs.pop("title", ""), kwargs.pop("ylabel", "")
+    show_title = kwargs.pop("show_title", True)
+    error_side, y_step, y_format = kwargs.pop("error_side", "both"), kwargs.pop("y_step", None), kwargs.pop("y_format", None)
+    percent = kwargs.pop("percent", False)
+    layers = kwargs.pop("layers", None)
+    _f, rec = plot(table, kind, ax=top, ylabel="", title="", show_title=False, layers=layers,
+                   percent=percent, **kwargs)
+    kw_low = dict(kwargs, annotate=False)
+    plot(table, kind, ax=bottom, ylabel="", title="", show_title=False, layers=layers, percent=percent, **kw_low)
+    lo0 = bottom.get_ylim()[0]
+    hi0 = max(top.get_ylim()[1], high * 1.05)
+    bottom.set_ylim(lo0, low)
+    top.set_ylim(high, hi0)
+    bottom._staplot_fixed_top = low            # the brackets' re-stacking keeps the break
+    top._staplot_top0 = hi0
+    if top.get_legend() is not None and bottom.get_legend() is not None:
+        bottom.get_legend().remove()
+    for a in (top, bottom):                      # one label for both halves, the title on top
+        a.set_title("")
+        a.set_ylabel("")
+    from matplotlib.text import Text
+    top.set_xlabel("")                           # its x label (the "Bars: mean ± SD" note) under the plot only
+    keep = set(top.get_yticklabels()) | {top.title, top.yaxis.label}
+    for t in top.findobj(Text):                  # the footnote ("Bars: mean ± SD") once, under the plot
+        if t not in keep and plot_part(t) != "brackets" and t not in top.get_xticklabels():
+            t.set_visible(False)
+    broken_axes_marks(top, bottom)
+    label = ylabel or getattr(table, "value_name", "") or "Value"
+    if kwargs.get("show_ylabel", True) is not False:
+        fig.supylabel(label, fontsize=bottom.yaxis.label.get_fontsize() or 9)
+    if title and show_title:
+        top.set_title(title)
+    from .plots.extras import one_sided_errors, set_y_ticks
+    one_sided_errors(fig, error_side)
+    if y_step or y_format:
+        for a in (top, bottom):
+            set_y_ticks(a, y_step, y_format)
+    fig.tight_layout()
+    _apply_layout(fig, **{k: v for k, v in layout.items() if k != "aspect"})
+    if layout.get("aspect"):
+        _w, h = fig.get_size_inches()
+        fig.set_size_inches(max(0.2, float(layout["aspect"])) * h, h)
+        fig.tight_layout()
+    rec = dict(rec or {})
+    rec["ybreak"] = [low, high]
+    return fig, rec
+
+
+def image_plot(path, **kwargs):
+    """An image (a mask, a segmentation, a micrograph) with its coordinate axes, in
+    pixels or calibrated units: :func:`staplot.plots.extras.image_plot`."""
+    from .plots.extras import image_plot as _image_plot
+    return _image_plot(path, **kwargs)
+
+
+def _with_extras(result, table, kind, ax, layers, y2, error, element_colors, order, normalize, rename=None):
+    """The layers and right-hand axis of :func:`plot`, on the drawn plot."""
+    from .plots.layers import add_layers, add_y2
+    fig, rec = result
+    main = ax if ax is not None else fig.axes[0]
+    colors = element_colors or {}
+    if layers:
+        if not isinstance(table, DataTable) or kind not in ("bar", "box", "violin", "paired"):
+            raise ValueError("layers go over the groups of a bar, box, violin or paired plot")
+        # the groups as _plot_one drew them: normalized, renamed, then in order
+        t = table
+        if normalize:
+            t, _lbl = normalized(t, normalize)
+        if rename:
+            t = _renamed(t, rename)
+            order = [rename.get(o, o) for o in order] if order else order
+        if order:
+            t = _reordered(t, order)
+        add_layers(main, t.group_arrays(), layers, error=error, color=colors.get("layers"))
+    if y2:
+        spec = dict(y2)
+        if colors.get("y2") and not spec.get("color"):
+            spec["color"] = colors["y2"]
+        add_y2(fig, main, spec, read_table, select_columns, error=error)
+        if ax is None:
+            fig.tight_layout()
+    return fig, rec
+
+
+def _plot_no_extras(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
+                    only_significant: bool = True, stats_mode: str = "auto", title: str = "",
+                    ylabel: str = "", xlabel: str = "", colors=None, show_title: bool = True,
+                    aspect=None, width=None, height=None, font_scale=None, order=None, ylim=None,
+                    log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
+                    show_xlabel: bool = True, rename=None, show_points: bool = True,
+                    violin_inner: str = "lines", violin_side: str = "both", element_colors=None, ax=None,
+                    show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
+                    control=None, point_style: str = "jitter", normalize=None, pairs=None,
+                    stats_text: bool = False, kind_options=None):
     if normalize:
         if not isinstance(table, DataTable):
             raise ValueError("normalize applies to bar, box, violin and paired plots (one factor)")
@@ -1110,7 +1313,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                              show_title=show_title, order=order, show_ylabel=show_ylabel,
                              show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                              violin_inner=violin_inner, violin_side=violin_side, facet_ax=ax,
-                             control=control, pairs=pairs, stats_text=stats_text),
+                             control=control, pairs=pairs, stats_text=stats_text, kind_options=kind_options),
                 table, kind, ax, element_colors, **extras))
     return _untagged(_details(_plot_one(table, kind, error=error, annotate=annotate, only_significant=only_significant,
                      stats_mode=stats_mode, title=title, ylabel=ylabel, xlabel=xlabel, colors=colors,
@@ -1119,7 +1322,7 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
                      xtick_rotation=xtick_rotation, legend=legend, show_ylabel=show_ylabel,
                      show_xlabel=show_xlabel, rename=rename, show_points=show_points,
                      violin_inner=violin_inner, violin_side=violin_side, element_colors=element_colors,
-                     control=control, pairs=pairs, stats_text=stats_text),
+                     control=control, pairs=pairs, stats_text=stats_text, kind_options=kind_options),
                      table, kind, None, element_colors, **extras))
 
 
@@ -1325,8 +1528,9 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
               log_y: bool = False, xtick_rotation=None, legend=None, show_ylabel: bool = True,
               show_xlabel: bool = True, rename=None, show_points: bool = True,
               violin_inner: str = "lines", violin_side: str = "both", element_colors=None,
-              facet_ax=None, control=None, pairs=None, stats_text=False):
+              facet_ax=None, control=None, pairs=None, stats_text=False, kind_options=None):
     kind = kind.lower()
+    kind_options = dict(kind_options or {})
     if isinstance(colors, dict):
         colors = _colors_by_name(table, kind, colors, rename)
     # the y label the table gives (its value column: "area (um2)") when none is asked
@@ -1344,9 +1548,15 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
 
     stats_record = None
     sig_pairs = None
+    from .stats.nested import has_subjects, means_table, mixed_model
+    nested = has_subjects(table) and kind in ("bar", "box", "violin")
     if annotate and kind in ("bar", "box", "violin"):
-        stats_record = auto_test(table, only_significant=only_significant,
+        # several values per subject: the subjects' means are the replicates
+        stats_record = auto_test(means_table(table) if nested else table, only_significant=only_significant,
                                  parametric=parametric, control=control)
+        if nested:
+            stats_record["unit"] = "subject means"
+            stats_record["mixed_model"] = mixed_model(table)
         sig_pairs = stats_record["sig_pairs"] or None
         if pairs:
             sig_pairs = _chosen_pairs(stats_record, pairs, only_significant) or None
@@ -1418,6 +1628,33 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
             stats_record["split_comparisons"] = pairs
             if stats_text and "error" not in stats_record:
                 _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
+    elif kind == "stacked":
+        if isinstance(table, DataTable):
+            raise ValueError("a stacked bar plot needs a two-factor table: the bars (x), the stacks "
+                             "(colours), the count / value, e.g. columns=['genotype', 'phenotype', 'n']")
+        from .plots.extras import plot_stacked, chi_square
+        names = getattr(table, "factor_names", None)
+        fig, counts = plot_stacked(table, percent=bool(kind_options.get("percent")), title=title,
+                                   ylabel=ylabel if ylabel and ylabel != getattr(table, "value_name", "") else "",
+                                   xlabel=xlabel or (names[1] if names else ""), colors=colors,
+                                   legend_title=names[0] if names else "")
+        if annotate:
+            stats_record = chi_square(counts["counts"])
+            stats_record["counts"] = counts["counts"]
+    elif kind == "dose_response":
+        if not isinstance(table, DataTable):
+            raise ValueError("a dose-response plot takes the dose column then one column per response")
+        from .plots.extras import plot_dose_response
+        fig, stats_record = plot_dose_response(table, error=error, title=title, xlabel=xlabel, ylabel=ylabel,
+                                               colors=colors, log_x=kind_options.get("log_x", True) is not False,
+                                               annotate=annotate)
+    elif kind == "histogram":
+        fig = _plots.plot_histogram(table, bins=kind_options.get("bins") or "auto", title=title,
+                                    xlabel=xlabel or getattr(table, "value_name", "") or "Value",
+                                    ylabel=ylabel, colors=colors)
+    elif kind == "heatmap":
+        fig = _plots.plot_heatmap(table, cmap=kind_options.get("cmap") or "RdYlBu_r", title=title,
+                                  annotate=bool(annotate))
     elif kind == "grouped":
         fig = _plots.plot_grouped_bar(table, error_type=error, title=title,
                                       ylabel=ylabel, colors=colors)
@@ -1436,6 +1673,9 @@ def _plot_one(table, kind: str = "bar", *, error: str = "sd", annotate: bool = T
                              stats_record["within_x"], error)
             if stats_text and "error" not in stats_record:
                 _annotate_two_way(fig, stats_record, getattr(table, "factor_names", None), ax=facet_ax)
+    if nested:
+        from .stats.nested import draw_subject_means
+        draw_subject_means(facet_ax if facet_ax is not None else fig.axes[0], table)
     if facet_ax is not None:
         # one facet: the figure's size, layout and colours are set once, by plot_facets
         if not show_ylabel:
@@ -1520,7 +1760,7 @@ def facet_tables(path: str, kind: str, facet: str, facet_row: str | None = None,
     (and of *facet_row*), "day = 7" ..."""
     col, levels = facet_levels(path, facet, where, skip_rows)
     row_col, row_levels = (facet_levels(path, facet_row, where, skip_rows) if facet_row else (None, [None]))
-    two = kind in ("grouped", "split_violin", "line")
+    two = kind in TWO_FACTOR_KINDS
     if columns is None:
         columns = [str(c) for c in read_table(path, skip_rows).columns if str(c) not in (col, row_col)]
     out = []
@@ -1596,8 +1836,12 @@ def plot_facets(path: str, kind: str = "box", facet: str = "", *, columns=None, 
     per_w = 2.2 if kind in ("bar", "box", "violin") else 3.0
     # own y axes while drawing (each facet's brackets need their room), one range after
     fig, axes = plt.subplots(nr, nc, figsize=(per_w * nc + 0.6, 3.0 * nr + 0.4), squeeze=False)
+    if kwargs.get("y2"):
+        # every facet shares one y range: a right-hand axis would be pulled into it
+        raise ValueError("y2 (a right-hand axis) is for a single plot, not facets")
     layout_keys = ("aspect", "width", "height", "font_scale", "ylim", "log_y", "xtick_rotation", "legend",
                    "element_colors")
+    inverted = {k: bool(kwargs.pop(k, False)) for k in ("invert_y", "invert_x")}
     layout = {k: kwargs.pop(k) for k in layout_keys if k in kwargs}
     title = kwargs.pop("title", "")          # over the whole figure; each facet shows its value
     kwargs.pop("show_title", None)
@@ -1645,6 +1889,11 @@ def plot_facets(path: str, kind: str = "box", facet: str = "", *, columns=None, 
     _apply_layout(fig, **{k: v for k, v in layout.items() if k != "element_colors"})
     if layout.get("element_colors"):
         apply_element_colors(fig, layout["element_colors"])
+    for a in fig.axes:
+        if a.get_visible() and inverted["invert_y"] and not a.yaxis_inverted():
+            a.invert_yaxis()
+        if a.get_visible() and inverted["invert_x"] and not a.xaxis_inverted():
+            a.invert_xaxis()
     if title:
         fig.suptitle(title)
         top = min(top, 1 - 0.35 / fig.get_size_inches()[1])
@@ -1930,7 +2179,10 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
               facet: str | None = None, facet_row: str | None = None, ncols: int | None = None,
               show_n: bool = False, show_mean: bool = False, p_format: str = "stars", hlines=None,
               control: str | None = None, point_style: str = "jitter", normalize: str | None = None,
-              pairs=None, stats_text: bool = False) -> str:
+              pairs=None, stats_text: bool = False, layers=None, y2: dict | None = None,
+              invert_y: bool = False, invert_x: bool = False, ybreak=None, y_step=None, y_format=None,
+              log_base=None, error_side: str = "both", percent: bool = False, bins=None, cmap=None,
+              log_x: bool = True) -> str:
     """The Python code of a plot (user: "can staplot print the code it used to generate
     the fig"): a runnable script whose first part redraws the figure with staplot, and
     whose second part reads the table with pandas as staplot does (separator, decimal
@@ -1967,7 +2219,14 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                  ("control", control, None), ("point_style", point_style, "jitter"),
                                  ("normalize", normalize, None),
                                  ("pairs", [list(p) for p in pairs] if pairs else None, None),
-                                 ("stats_text", stats_text, False)):
+                                 ("stats_text", stats_text, False),
+                                 ("layers", list(layers) if layers else None, None),
+                                 ("y2", dict(y2) if y2 else None, None),
+                                 ("invert_y", invert_y, False), ("invert_x", invert_x, False),
+                                 ("ybreak", list(ybreak) if ybreak else None, None), ("y_step", y_step, None),
+                                 ("y_format", y_format, None), ("log_base", log_base, None),
+                                 ("error_side", error_side, "both"), ("percent", percent, False),
+                                 ("bins", bins, None), ("cmap", cmap, None), ("log_x", log_x, True)):
         if value != default:
             args.append(f"{name}={value!r}")
     if facet:
@@ -2011,7 +2270,7 @@ def plot_code(path: str, kind: str = "bar", *, error: str = "sd", annotate: bool
                                 control=control, order=order)
                 out += one[one.index("# --- 2."):].splitlines()
         return "\n".join(out)
-    builder = "grouped_table_from_csv" if kind in ("grouped", "split_violin", "line") else "table_from_csv"
+    builder = "grouped_table_from_csv" if kind in TWO_FACTOR_KINDS else "table_from_csv"
     out = [f"# Made by staplot {__version__} from {os.path.basename(split_sheet(path)[0])}"
            + (f" (sheet {split_sheet(path)[1]})" if split_sheet(path)[1] else "") + ".",
            "# Part 1 redraws the figure; part 2 runs the statistics without staplot.",

@@ -46,6 +46,14 @@ From Python: `staplot.ui.plot_editor.PlotEditor(path, kind, kwargs)`; after OK,
 and font per part of the text. PyFigures opens it on a double-click on a data plot.
 Icons come from `qtawesome` when it is installed (optional).
 
+Beyond the basic kinds, `api.plot` takes `layers` (mean / median lines, mean ± error over
+the groups), `y2` (a measure on a right-hand axis), `invert_y` / `invert_x`, `ybreak`
+(a broken y axis), `y_step` / `y_format` / `log_base`, `error_side="up"`, and the kinds
+`stacked` (`percent`), `dose_response` (4-parameter logistic fit, EC50), `histogram`,
+`heatmap`. `api.table_from_csv(path, columns=[group, value], subject="animal")` makes the
+animals the replicates (tests on their means, a SuperPlot, plus a mixed model).
+`api.image_plot(path, pixel_size=0.2, unit="µm")` draws an image with its coordinate axes.
+
 From Python (no GUI needed, safe to run headless):
 
 ```python
