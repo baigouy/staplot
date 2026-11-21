@@ -23,9 +23,20 @@ def test_broken_y_axis(groups):
     fig.canvas.draw()
     assert bottom.get_ylim()[1] == 20 and top.get_ylim()[0] == 350
     assert rec["ybreak"] == [20, 350]
-    assert fig._supylabel.get_text() == "area"
+    # one label for both halves, on the lower axes, clear of its tick labels (a figure
+    # supylabel sat on them once PyFigures cropped the panel, MCP check 2026-11-21)
+    assert bottom.get_ylabel() == "area" and not top.get_ylabel()
+    renderer = fig.canvas.get_renderer()
+    label = bottom.yaxis.label.get_window_extent(renderer)
+    ticks = [t.get_window_extent(renderer) for t in bottom.get_yticklabels() if t.get_text()]
+    assert all(label.x1 <= t.x0 + 0.5 for t in ticks)
     with pytest.raises(ValueError, match="low must be below"):
         api.plot(api.table_from_csv(groups), kind="bar", ybreak=[50, 10])
+    # what a broken axis cannot take is refused, never left out silently
+    with pytest.raises(ValueError, match="right-hand axis"):
+        api.plot(api.table_from_csv(groups), kind="bar", ybreak=[20, 350], y2={"csv": groups, "columns": ["WT"]})
+    with pytest.raises(ValueError, match="inverted"):
+        api.plot(api.table_from_csv(groups), kind="bar", ybreak=[20, 350], invert_y=True)
 
 
 def test_dose_response_fit(tmp_path):

@@ -726,9 +726,12 @@ def suggest_kind(source, columns=None, where=None, skip_rows=None) -> dict:
             if not numeric:
                 return {"kind": None, "n_min": None, "reason": "no column of numbers to plot"}
             return {"kind": None, "n_min": None,
+                    # the plot this table needs, named with its own columns (a seaborn plot
+                    # was suggested instead; PyFigures MCP check 2026-11-21)
                     "reason": (f"a tidy table with factors ({', '.join(text)}) and measures "
-                               f"({', '.join(numeric)}): say which measure against which factor "
-                               f"(in PyFigures: a seaborn plot, e.g. catplot)")}
+                               f"({', '.join(numeric)}): pick one factor and one measure, "
+                               f"columns=[{text[0]!r}, {numeric[-1]!r}]; another factor as a third column "
+                               f"(grouped, split_violin) or as facet= (one plot per value)")}
         table = table_from_csv(source)
     else:
         table = source
@@ -1152,6 +1155,12 @@ def plot(table, kind: str = "bar", *, error: str = "sd", annotate: bool = True,
     *histogram* (one per column; *bins*); *heatmap* (the table's values; *cmap*).
     """
     if ybreak:
+        # these were silently left out of a broken axis (PyFigures MCP check 2026-11-21)
+        if y2:
+            raise ValueError("a broken y axis (ybreak) and a right-hand axis (y2) cannot be combined: "
+                             "keep one, or show the second measure in its own plot")
+        if invert_y or log_y:
+            raise ValueError("a broken y axis (ybreak) cannot also be inverted or logarithmic")
         return _plot_broken(table, kind, ybreak, dict(
             error=error, annotate=annotate, only_significant=only_significant, stats_mode=stats_mode,
             title=title, ylabel=ylabel, xlabel=xlabel, colors=colors, show_title=show_title, order=order,
@@ -1234,7 +1243,11 @@ def _plot_broken(table, kind, ybreak, kwargs, layout, ax=None):
     broken_axes_marks(top, bottom)
     label = ylabel or getattr(table, "value_name", "") or "Value"
     if kwargs.get("show_ylabel", True) is not False:
-        fig.supylabel(label, fontsize=bottom.yaxis.label.get_fontsize() or 9)
+        # on the lower axes, centred on both halves: matplotlib keeps an axis label clear of
+        # the tick labels (a figure supylabel sat on them once the panel was cropped)
+        bottom.set_ylabel(label)
+        b, t = bottom.get_position(), top.get_position()
+        bottom.yaxis.label.set_y(((t.y1 + b.y0) / 2 - b.y0) / b.height)
     if title and show_title:
         top.set_title(title)
     from .plots.extras import one_sided_errors, set_y_ticks
